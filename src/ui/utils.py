@@ -53,27 +53,37 @@ KEYBOARD_LAYOUT = [
 
 
 def get_heat_color(ratio):
-    """Get color based on heat ratio (0.0 to 1.0). Blue -> Green -> Yellow -> Red."""
+    """Get color based on heat ratio (0.0 to 1.0). Uses a softer, less saturated gradient.
+    
+    Colors transition: Soft Blue → Teal → Soft Green → Warm Yellow → Soft Orange
+    All colors have reduced saturation for a more pleasing look.
+    """
+    # Define color stops with reduced saturation (HSL-style approach)
+    # Each tuple: (r, g, b) - all values are softer/muted
     if ratio < 0.25:
-        # Blue to Cyan
-        r = 0
-        g = int(255 * (ratio / 0.25))
-        b = 255
+        # Soft Blue (#4A6FA5) to Teal (#4A8F8F)
+        t = ratio / 0.25
+        r = int(74 + (74 - 74) * t)
+        g = int(111 + (143 - 111) * t)
+        b = int(165 + (143 - 165) * t)
     elif ratio < 0.5:
-        # Cyan to Green
-        r = 0
-        g = 255
-        b = int(255 * (1 - (ratio - 0.25) / 0.25))
+        # Teal (#4A8F8F) to Soft Green (#6BAF6B)
+        t = (ratio - 0.25) / 0.25
+        r = int(74 + (107 - 74) * t)
+        g = int(143 + (175 - 143) * t)
+        b = int(143 + (107 - 143) * t)
     elif ratio < 0.75:
-        # Green to Yellow
-        r = int(255 * ((ratio - 0.5) / 0.25))
-        g = 255
-        b = 0
+        # Soft Green (#6BAF6B) to Warm Yellow (#D4B85A)
+        t = (ratio - 0.5) / 0.25
+        r = int(107 + (212 - 107) * t)
+        g = int(175 + (184 - 175) * t)
+        b = int(107 + (90 - 107) * t)
     else:
-        # Yellow to Red
-        r = 255
-        g = int(255 * (1 - (ratio - 0.75) / 0.25))
-        b = 0
+        # Warm Yellow (#D4B85A) to Soft Coral (#D4736B)
+        t = (ratio - 0.75) / 0.25
+        r = int(212 + (212 - 212) * t)
+        g = int(184 + (115 - 184) * t)
+        b = int(90 + (107 - 90) * t)
     return QColor(r, g, b)
 
 

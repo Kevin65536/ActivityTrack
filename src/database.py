@@ -133,3 +133,74 @@ class Database:
                 WHERE date BETWEEN ? AND ?
             ''', (start_date, end_date))
             return cursor.fetchone()
+
+    def get_weekly_summary(self):
+        """Get this week's aggregated statistics (last 7 days)."""
+        today = datetime.date.today()
+        start_date = today - datetime.timedelta(days=6)
+        return self.get_stats_range(start_date, today)
+
+    def get_monthly_summary(self):
+        """Get this month's aggregated statistics (last 30 days)."""
+        today = datetime.date.today()
+        start_date = today - datetime.timedelta(days=29)
+        return self.get_stats_range(start_date, today)
+
+    def get_all_time_stats(self):
+        """Get all-time aggregated statistics."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 
+                    SUM(key_count) as total_keys,
+                    SUM(mouse_click_count) as total_clicks,
+                    SUM(mouse_distance) as total_distance,
+                    SUM(scroll_distance) as total_scroll,
+                    MIN(date) as first_date,
+                    MAX(date) as last_date,
+                    COUNT(DISTINCT date) as days_tracked
+                FROM daily_stats
+            ''')
+            return cursor.fetchone()
+
+    def get_top_apps(self, limit=10, start_date=None, end_date=None):
+        """Get top applications by keystroke count within a date range."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if start_date and end_date:
+                cursor.execute('''
+                    SELECT app_name, SUM(key_count) as total_keys
+                    FROM app_stats 
+                    WHERE date BETWEEN ? AND ?
+                    GROUP BY app_name
+                    ORDER BY total_keys DESC
+                    LIMIT ?
+                ''', (start_date, end_date, limit))
+            else:
+                cursor.execute('''
+                    SELECT app_name, SUM(key_count) as total_keys
+                    FROM app_stats 
+                    GROUP BY app_name
+                    ORDER BY total_keys DESC
+                    LIMIT ?
+                ''', (limit,))
+            return cursor.fetchall()
+
+    def get_daily_history(self, start_date=None, end_date=None):
+        """Get daily statistics for trend charts. Returns list of (date, keys, clicks, distance, scroll)."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if start_date and end_date:
+                cursor.execute('''
+                    SELECT date, key_count, mouse_click_count, mouse_distance, scroll_distance
+                    FROM daily_stats 
+                    WHERE date BETWEEN ? AND ?
+                    ORDER BY date ASC
+                ''', (start_date, end_date))
+            else:
+                cursor.execute('''
+                    SELECT date, key_count, mouse_click_count, mouse_distance, scroll_distance
+                    FROM daily_stats 
+                    ORDER BY date ASC
+                ''')
+            return cursor.fetchall()

@@ -1,7 +1,87 @@
-from PySide6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, QFrame, QGridLayout
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                                QLabel, QTabWidget, QFrame, QGridLayout, QPushButton,
+                                QButtonGroup, QSizePolicy)
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QFont, QColor, QPalette
 from .utils import HeatmapWidget
+from .history_chart import HistoryChartWidget
+import datetime
+
+
+class TimeRangeSelector(QWidget):
+    """Button bar for selecting time range: Today, Week, Month, Year, All"""
+    range_changed = Signal(str)  # Emits: 'today', 'week', 'month', 'year', 'all'
+    
+    def __init__(self):
+        super().__init__()
+        self.current_range = 'today'
+        
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        
+        self.buttons = {}
+        ranges = [
+            ('today', 'Today'),
+            ('week', 'Week'),
+            ('month', 'Month'),
+            ('year', 'Year'),
+            ('all', 'All Time')
+        ]
+        
+        for key, label in ranges:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setMinimumWidth(80)
+            btn.clicked.connect(lambda checked, k=key: self.on_range_selected(k))
+            self.buttons[key] = btn
+            layout.addWidget(btn)
+        
+        # Select 'today' by default
+        self.buttons['today'].setChecked(True)
+        
+        layout.addStretch()
+        
+        # Apply styling
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: #3d3d3d;
+                color: #aaaaaa;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 16px;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+            QPushButton:checked {
+                background-color: #00e676;
+                color: #1e1e1e;
+                font-weight: bold;
+            }
+        """)
+    
+    def on_range_selected(self, key):
+        for k, btn in self.buttons.items():
+            btn.setChecked(k == key)
+        self.current_range = key
+        self.range_changed.emit(key)
+    
+    def get_date_range(self):
+        """Returns (start_date, end_date) based on current selection."""
+        today = datetime.date.today()
+        if self.current_range == 'today':
+            return today, today
+        elif self.current_range == 'week':
+            return today - datetime.timedelta(days=6), today
+        elif self.current_range == 'month':
+            return today - datetime.timedelta(days=29), today
+        elif self.current_range == 'year':
+            return today - datetime.timedelta(days=364), today
+        else:  # 'all'
+            return None, None
+
 
 class StatCard(QFrame):
     def __init__(self, title, value, unit=""):
@@ -34,6 +114,7 @@ class StatCard(QFrame):
 
     def update_value(self, value):
         self.lbl_value.setText(f"{value} {self.unit}")
+
 
 class MainWindow(QMainWindow):
     def __init__(self, tracker):
@@ -78,6 +159,11 @@ class MainWindow(QMainWindow):
         self.setup_heatmap()
         self.tabs.addTab(self.heatmap_tab, "Heatmap")
         
+        # History Tab
+        self.history_tab = QWidget()
+        self.setup_history()
+        self.tabs.addTab(self.history_tab, "History")
+        
         # Timer to update UI
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_stats)
@@ -91,11 +177,21 @@ class MainWindow(QMainWindow):
         layout.setSpacing(20)
         layout.setContentsMargins(30, 30, 30, 30)
         
-        # Title
-        title = QLabel("Today's Statistics")
-        title.setFont(QFont("Arial", 28, QFont.Bold))
-        title.setStyleSheet("color: white;")
-        layout.addWidget(title)
+        # Header with Title and Time Range Selector
+        header = QHBoxLayout()
+        
+        self.dashboard_title = QLabel("Today's Statistics")
+        self.dashboard_title.setFont(QFont("Arial", 28, QFont.Bold))
+        self.dashboard_title.setStyleSheet("color: white;")
+        header.addWidget(self.dashboard_title)
+        
+        header.addStretch()
+        
+        self.time_selector = TimeRangeSelector()
+        self.time_selector.range_changed.connect(self.on_time_range_changed)
+        header.addWidget(self.time_selector)
+        
+        layout.addLayout(header)
         
         # Cards Grid
         grid = QGridLayout()
@@ -116,38 +212,107 @@ class MainWindow(QMainWindow):
 
     def setup_heatmap(self):
         layout = QVBoxLayout(self.heatmap_tab)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(20)
+        layout.setContentsMargins(30, 30, 30, 30)
+        
+        # Header with Title and Time Range Selector (matching Dashboard layout)
+        header = QHBoxLayout()
+        
+        self.heatmap_title = QLabel("Keyboard Heatmap")
+        self.heatmap_title.setFont(QFont("Arial", 28, QFont.Bold))
+        self.heatmap_title.setStyleSheet("color: white;")
+        header.addWidget(self.heatmap_title)
+        
+        header.addStretch()
+        
+        self.heatmap_time_selector = TimeRangeSelector()
+        self.heatmap_time_selector.range_changed.connect(self.on_heatmap_range_changed)
+        header.addWidget(self.heatmap_time_selector)
+        
+        layout.addLayout(header)
+        
         self.heatmap_widget = HeatmapWidget()
         layout.addWidget(self.heatmap_widget)
+        layout.addStretch()
+
+    def setup_history(self):
+        layout = QVBoxLayout(self.history_tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        self.history_chart = HistoryChartWidget(self.tracker.db)
+        layout.addWidget(self.history_chart)
+
+    def on_time_range_changed(self, range_key):
+        """Handle time range selection change in dashboard."""
+        titles = {
+            'today': "Today's Statistics",
+            'week': "This Week's Statistics",
+            'month': "This Month's Statistics",
+            'year': "This Year's Statistics",
+            'all': "All Time Statistics"
+        }
+        self.dashboard_title.setText(titles.get(range_key, "Statistics"))
+        self.update_stats()
+
+    def on_heatmap_range_changed(self, range_key):
+        """Handle time range selection change in heatmap."""
+        self.update_heatmap()
 
     def update_stats(self):
-        # Get snapshot from tracker
-        stats = self.tracker.get_stats_snapshot()
+        # Get date range from selector
+        start_date, end_date = self.time_selector.get_date_range()
+        
+        if start_date is None:  # All time
+            db_stats = self.tracker.db.get_all_time_stats()
+            keys = db_stats[0] or 0
+            clicks = db_stats[1] or 0
+            distance = db_stats[2] or 0.0
+            scroll = db_stats[3] or 0.0
+        else:
+            # Get stats from database for the selected range
+            db_stats = self.tracker.db.get_stats_range(start_date, end_date)
+            keys = db_stats[0] or 0
+            clicks = db_stats[1] or 0
+            distance = db_stats[2] or 0.0
+            scroll = db_stats[3] or 0.0
+        
+        # If viewing today, also add current buffer
+        if self.time_selector.current_range == 'today':
+            buffer_stats = self.tracker.get_stats_snapshot()
+            keys += buffer_stats.get('buffer_keys', 0)
+            clicks += buffer_stats.get('buffer_clicks', 0)
+            distance += buffer_stats.get('buffer_distance', 0.0)
+            scroll += buffer_stats.get('buffer_scroll', 0.0)
         
         # Update Cards
-        self.card_keys.update_value(f"{stats['keys']:,}")
-        self.card_clicks.update_value(f"{stats['clicks']:,}")
-        self.card_distance.update_value(f"{stats['distance']:.2f}")
-        self.card_scroll.update_value(f"{stats['scroll']:.0f}")
+        self.card_keys.update_value(f"{int(keys):,}")
+        self.card_clicks.update_value(f"{int(clicks):,}")
+        self.card_distance.update_value(f"{distance:.2f}")
+        self.card_scroll.update_value(f"{scroll:.0f}")
         
-        # Update Heatmap
-        # We need to merge DB heatmap data with current buffer if we want full history
-        # For now, let's just show what's in the snapshot (which includes buffer)
-        # BUT, the snapshot only has the buffer. We need to fetch DB stats for heatmap too.
-        # This is expensive to do every second. 
-        # Better approach: Fetch DB once on load, and then add buffer.
-        # For now, let's just pass the buffer + a cached DB version.
+        # Update Heatmap (only if on today or using heatmap tab)
+        self.update_heatmap()
+
+    def update_heatmap(self):
+        """Update keyboard heatmap based on heatmap tab's time selector."""
+        start_date, end_date = self.heatmap_time_selector.get_date_range()
         
-        # Ideally, tracker.get_stats_snapshot() should return merged heatmap data?
-        # Or we just show the session data in heatmap for responsiveness.
-        # Let's show session data (buffer) for now to be safe and fast.
+        if start_date is None:  # All time
+            # Get all heatmap data
+            heatmap_data = self.tracker.db.get_heatmap_range(
+                datetime.date(2000, 1, 1),
+                datetime.date.today()
+            )
+        else:
+            heatmap_data = self.tracker.db.get_heatmap_range(start_date, end_date)
         
-        # Wait, the user wants to see "heatmap". Usually that means "today's heatmap".
-        # Let's fetch today's heatmap from DB occasionally or cache it.
-        # For simplicity in this iteration: just show buffer. 
-        # IMPROVEMENT: Fetch DB heatmap in tracker.get_stats_snapshot? No, too slow.
+        # Add current buffer if viewing today
+        if self.heatmap_time_selector.current_range == 'today':
+            buffer = self.tracker.get_stats_snapshot().get('heatmap', {})
+            for key, count in buffer.items():
+                heatmap_data[key] = heatmap_data.get(key, 0) + count
         
-        self.heatmap_widget.update_data(stats['heatmap'])
+        self.heatmap_widget.update_data(heatmap_data)
 
     def closeEvent(self, event):
         event.ignore()

@@ -164,12 +164,25 @@ class InputTracker:
             for key_code, count in self.heatmap_buffer.items():
                 merged_heatmap[key_code] = merged_heatmap.get(key_code, 0) + count
             
+            # Also capture raw buffer values for live updates
+            buffer_keys = self.key_buffer
+            buffer_clicks = self.click_buffer
+            buffer_distance = self.distance_buffer
+            buffer_scroll = self.scroll_buffer
+            buffer_heatmap = dict(self.heatmap_buffer)
+            
         return {
             'keys': keys,
             'clicks': clicks,
             'distance': distance,
             'scroll': scroll,
-            'heatmap': merged_heatmap
+            'heatmap': merged_heatmap,
+            # Buffer-only values for live updates
+            'buffer_keys': buffer_keys,
+            'buffer_clicks': buffer_clicks,
+            'buffer_distance': buffer_distance,
+            'buffer_scroll': buffer_scroll,
+            'buffer_heatmap': buffer_heatmap
         }
 
     def get_active_app_name(self):
