@@ -44,7 +44,40 @@ class Database:
                     PRIMARY KEY (date, key_code)
                 )
             ''')
+            
+            # Mouse Heatmap data table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS mouse_heatmap_data (
+                    date DATE,
+                    x INTEGER,
+                    y INTEGER,
+                    count INTEGER DEFAULT 0,
+                    PRIMARY KEY (date, x, y)
+                )
+            ''')
             conn.commit()
+            
+            # Migration for new columns in app_stats
+            self._migrate_app_stats_schema()
+
+    def _migrate_app_stats_schema(self):
+        """Add new columns to app_stats if they don't exist."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                # Check if columns exist
+                cursor.execute("PRAGMA table_info(app_stats)")
+                columns = [info[1] for info in cursor.fetchall()]
+                
+                if 'clicks' not in columns:
+                    cursor.execute("ALTER TABLE app_stats ADD COLUMN clicks INTEGER DEFAULT 0")
+                if 'scrolls' not in columns:
+                    cursor.execute("ALTER TABLE app_stats ADD COLUMN scrolls INTEGER DEFAULT 0")
+                if 'distance' not in columns:
+                    cursor.execute("ALTER TABLE app_stats ADD COLUMN distance INTEGER DEFAULT 0")
+                conn.commit()
+            except sqlite3.Error as e:
+                print(f"Migration warning: {e}")
 
     def update_stats(self, date, key_count=0, click_count=0, distance=0.0, scroll=0.0):
         with self.get_connection() as conn:
@@ -60,15 +93,18 @@ class Database:
             ''', (date, key_count, click_count, distance, scroll))
             conn.commit()
 
-    def update_app_stats(self, date, app_name, key_count):
+    def update_app_stats(self, date, app_name, key_count=0, click_count=0, scroll_count=0, distance=0):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO app_stats (date, app_name, key_count)
-                VALUES (?, ?, ?)
+                INSERT INTO app_stats (date, app_name, key_count, clicks, scrolls, distance)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(date, app_name) DO UPDATE SET
-                    key_count = key_count + excluded.key_count
-            ''', (date, app_name, key_count))
+                    key_count = key_count + excluded.key_count,
+                    clicks = clicks + excluded.clicks,
+                    scrolls = scrolls + excluded.scrolls,
+                    distance = distance + excluded.distance
+            ''', (date, app_name, key_count, click_count, scroll_count, distance))
             conn.commit()
 
     def update_heatmap(self, date, key_code, count):
@@ -80,6 +116,18 @@ class Database:
                 ON CONFLICT(date, key_code) DO UPDATE SET
                     count = count + excluded.count
             ''', (date, key_code, count))
+
+            conn.commit()
+
+    def update_mouse_heatmap(self, date, x, y, count):
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO mouse_heatmap_data (date, x, y, count)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(date, x, y) DO UPDATE SET
+                    count = count + excluded.count
+            ''', (date, x, y, count))
             conn.commit()
 
     def get_today_stats(self):
@@ -118,6 +166,26 @@ class Database:
             ''', (start_date, end_date))
             rows = cursor.fetchall()
             return {row[0]: row[1] for row in rows}
+
+    def get_today_mouse_heatmap(self):
+        """Get today's mouse heatmap data from database."""
+        today = datetime.date.today()
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT x, y, count FROM mouse_heatmap_data WHERE date = ?', (today,))
+            return cursor.fetchall()
+
+    def get_mouse_heatmap_range(self, start_date, end_date):
+        """Get aggregated mouse heatmap data for a date range."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT x, y, SUM(count) as total_count 
+                FROM mouse_heatmap_data 
+                WHERE date BETWEEN ? AND ? 
+                GROUP BY x, y
+            ''', (start_date, end_date))
+            return cursor.fetchall()
 
     def get_stats_range(self, start_date, end_date):
         """Get aggregated stats for a date range."""
@@ -182,6 +250,40 @@ class Database:
                     FROM app_stats 
                     GROUP BY app_name
                     ORDER BY total_keys DESC
+                    LIMIT ?
+                ''', (limit,))
+            return cursor.fetchall()
+
+    def get_app_stats_summary(self, limit=50, start_date=None, end_date=None):
+        """Get detailed app stats within a date range."""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if start_date and end_date:
+                cursor.execute('''
+                    SELECT 
+                        app_name, 
+                        SUM(key_count) as keys,
+                        SUM(clicks) as clicks,
+                        SUM(scrolls) as scrolls,
+                        SUM(distance) as distance
+                    FROM app_stats 
+                    WHERE date BETWEEN ? AND ?
+                    GROUP BY app_name
+                    ORDER BY keys DESC
+                    LIMIT ?
+                ''', (start_date, end_date, limit))
+            else:
+                # All time (or default view logic if needed, but currently unused without range)
+                cursor.execute('''
+                    SELECT 
+                        app_name, 
+                        SUM(key_count) as keys,
+                        SUM(clicks) as clicks,
+                        SUM(scrolls) as scrolls,
+                        SUM(distance) as distance
+                    FROM app_stats 
+                    GROUP BY app_name
+                    ORDER BY keys DESC
                     LIMIT ?
                 ''', (limit,))
             return cursor.fetchall()

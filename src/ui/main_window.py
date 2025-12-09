@@ -1,10 +1,11 @@
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                                 QLabel, QTabWidget, QFrame, QGridLayout, QPushButton,
-                                QButtonGroup, QSizePolicy)
+                                QButtonGroup, QSizePolicy, QStackedWidget, QComboBox)
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QFont, QColor, QPalette
-from .utils import HeatmapWidget
+from .utils import HeatmapWidget, MouseHeatmapWidget
 from .history_chart import HistoryChartWidget
+from .app_stats_widget import AppStatsWidget
 import datetime
 
 
@@ -159,6 +160,11 @@ class MainWindow(QMainWindow):
         self.setup_heatmap()
         self.tabs.addTab(self.heatmap_tab, "Heatmap")
         
+        # Applications Tab
+        self.apps_tab = QWidget()
+        self.setup_apps()
+        self.tabs.addTab(self.apps_tab, "Applications")
+        
         # History Tab
         self.history_tab = QWidget()
         self.setup_history()
@@ -215,15 +221,76 @@ class MainWindow(QMainWindow):
         layout.setSpacing(20)
         layout.setContentsMargins(30, 30, 30, 30)
         
-        # Header with Title and Time Range Selector (matching Dashboard layout)
+        # Header with Title and Time Range Selector
         header = QHBoxLayout()
         
-        self.heatmap_title = QLabel("Keyboard Heatmap")
+        self.heatmap_title = QLabel("Heatmap")
         self.heatmap_title.setFont(QFont("Arial", 28, QFont.Bold))
         self.heatmap_title.setStyleSheet("color: white;")
         header.addWidget(self.heatmap_title)
         
         header.addStretch()
+        
+        # View Switcher (Keyboard / Mouse)
+        self.view_switcher_layout = QHBoxLayout()
+        self.view_switcher_layout.setSpacing(0)
+        
+        self.btn_keyboard = QPushButton("Keyboard")
+        self.btn_keyboard.setCheckable(True)
+        self.btn_keyboard.setChecked(True)
+        self.btn_mouse = QPushButton("Mouse")
+        self.btn_mouse.setCheckable(True)
+        
+        # Determine strict fixed size to ensure consistency
+        self.btn_keyboard.setFixedSize(100, 32)
+        self.btn_mouse.setFixedSize(100, 32)
+        
+        self.view_group = QButtonGroup(self)
+        self.view_group.setExclusive(True)
+        self.view_group.addButton(self.btn_keyboard, 0)
+        self.view_group.addButton(self.btn_mouse, 1)
+        self.view_group.idClicked.connect(self.on_heatmap_type_changed)
+        
+        self.view_switcher_layout.addWidget(self.btn_keyboard)
+        self.view_switcher_layout.addWidget(self.btn_mouse)
+        
+        # Style for the toggle buttons
+        switcher_style = """
+            QPushButton {
+                background-color: #2b2b2b;
+                color: #aaaaaa;
+                border: 1px solid #3d3d3d;
+                border-radius: 0px;
+                font-weight: bold;
+                font-size: 13px;
+                margin: 0px;
+            }
+            QPushButton:hover {
+                background-color: #3d3d3d;
+            }
+            QPushButton:checked {
+                background-color: #00e676;
+                color: #1e1e1e;
+                border: 1px solid #00e676;
+            }
+            QPushButton:first {
+                border-top-left-radius: 4px;
+                border-bottom-left-radius: 4px;
+                border-right: none;
+            }
+            QPushButton:last {
+                border-top-right-radius: 4px;
+                border-bottom-right-radius: 4px;
+                border-left: none;
+            }
+        """
+        self.btn_keyboard.setStyleSheet(switcher_style)
+        self.btn_mouse.setStyleSheet(switcher_style)
+        
+        header.addLayout(self.view_switcher_layout)
+        
+        # Spacer
+        header.addSpacing(20)
         
         self.heatmap_time_selector = TimeRangeSelector()
         self.heatmap_time_selector.range_changed.connect(self.on_heatmap_range_changed)
@@ -231,9 +298,99 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(header)
         
-        self.heatmap_widget = HeatmapWidget()
-        layout.addWidget(self.heatmap_widget)
+        # Stacked Widget for Heatmaps
+        self.heatmap_stack = QStackedWidget()
+        
+        self.keyboard_heatmap = HeatmapWidget()
+        self.mouse_heatmap = MouseHeatmapWidget()
+        
+        self.heatmap_stack.addWidget(self.keyboard_heatmap)
+        self.heatmap_stack.addWidget(self.mouse_heatmap)
+        
+        layout.addWidget(self.heatmap_stack)
         layout.addStretch()
+
+    def on_heatmap_type_changed(self, index):
+        self.heatmap_stack.setCurrentIndex(index)
+        self.heatmap_title.setText("Keyboard Heatmap" if index == 0 else "Mouse Heatmap")
+        self.update_heatmap()
+
+    def setup_apps(self):
+        layout = QVBoxLayout(self.apps_tab)
+        layout.setSpacing(20)
+        layout.setContentsMargins(30, 30, 30, 30)
+        
+        # Header
+        header = QHBoxLayout()
+        title = QLabel("Application Statistics")
+        title.setFont(QFont("Arial", 28, QFont.Bold))
+        title.setStyleSheet("color: white;")
+        header.addWidget(title)
+        
+        header.addStretch()
+        
+        self.apps_time_selector = TimeRangeSelector()
+        self.apps_time_selector.range_changed.connect(self.on_apps_range_changed)
+        header.addWidget(self.apps_time_selector)
+        
+        layout.addLayout(header)
+        
+        # Table
+        self.app_stats_widget = AppStatsWidget()
+        layout.addWidget(self.app_stats_widget)
+
+    def on_apps_range_changed(self, range_key):
+        self.update_apps()
+
+    def update_apps(self):
+        start_date, end_date = self.apps_time_selector.get_date_range()
+        
+        # Fetch from DB
+        stats = self.tracker.db.get_app_stats_summary(limit=100, start_date=start_date, end_date=end_date)
+        
+        # Convert to list of tuples if not already (fetchall returns list of tuples)
+        # Stats are (app_name, keys, clicks, scrolls, distance)
+        # We need to sanitize None values from SQL SUMs
+        
+        clean_stats = []
+        for row in stats:
+            clean_stats.append((
+                row[0],             # name
+                row[1] or 0,        # keys
+                row[2] or 0,        # clicks
+                row[3] or 0,        # scrolls
+                row[4] or 0.0       # distance
+            ))
+            
+        # Add buffer ONLY if 'today' is selected
+        if self.apps_time_selector.current_range == 'today':
+            buffer = self.tracker.app_stats_buffer # direct access or via snapshot?
+            # Prefer snapshot to be thread safe, but get_stats_snapshot doesn't return detailed app stats currently
+            # Let's add app_stats to get_stats_snapshot or access via lock.
+            # Accessing via lock is safer.
+            with self.tracker.lock:
+                buffer_snapshot = dict(self.tracker.app_stats_buffer) # Copy it
+            
+            # Merge logic... this is tricky with list of tuples.
+            # Convert DB stats to dict for merging
+            stats_dict = {row[0]: list(row[1:]) for row in clean_stats}
+            
+            for app, data in buffer_snapshot.items():
+                if app not in stats_dict:
+                    stats_dict[app] = [0, 0, 0, 0.0]
+                
+                stats_dict[app][0] += data.get('keys', 0)
+                stats_dict[app][1] += data.get('clicks', 0)
+                stats_dict[app][2] += data.get('scrolls', 0)
+                stats_dict[app][3] += data.get('distance', 0.0)
+                
+            # Convert back to list
+            clean_stats = [(app, *vals) for app, vals in stats_dict.items()]
+            # Sort by keys (default)
+            clean_stats.sort(key=lambda x: x[1], reverse=True)
+            
+        self.app_stats_widget.update_data(clean_stats)
+
 
     def setup_history(self):
         layout = QVBoxLayout(self.history_tab)
@@ -291,28 +448,56 @@ class MainWindow(QMainWindow):
         self.card_scroll.update_value(f"{scroll:.0f}")
         
         # Update Heatmap (only if on today or using heatmap tab)
+        # Update Heatmap (only if on today or using heatmap tab)
         self.update_heatmap()
+        
+        # Update Apps (only if visible or on today)
+        if self.tabs.currentWidget() == self.apps_tab:
+            self.update_apps()
 
     def update_heatmap(self):
         """Update keyboard heatmap based on heatmap tab's time selector."""
         start_date, end_date = self.heatmap_time_selector.get_date_range()
         
-        if start_date is None:  # All time
-            # Get all heatmap data
-            heatmap_data = self.tracker.db.get_heatmap_range(
-                datetime.date(2000, 1, 1),
-                datetime.date.today()
-            )
+        if self.view_group.checkedId() == 0:
+            # Keyboard Heatmap
+            if start_date is None:  # All time
+                heatmap_data = self.tracker.db.get_heatmap_range(
+                    datetime.date(2000, 1, 1),
+                    datetime.date.today()
+                )
+            else:
+                heatmap_data = self.tracker.db.get_heatmap_range(start_date, end_date)
+            
+            # Add current buffer if viewing today
+            if self.heatmap_time_selector.current_range == 'today':
+                buffer = self.tracker.get_stats_snapshot().get('heatmap', {})
+                for key, count in buffer.items():
+                    heatmap_data[key] = heatmap_data.get(key, 0) + count
+            
+            self.keyboard_heatmap.update_data(heatmap_data)
+            
         else:
-            heatmap_data = self.tracker.db.get_heatmap_range(start_date, end_date)
-        
-        # Add current buffer if viewing today
-        if self.heatmap_time_selector.current_range == 'today':
-            buffer = self.tracker.get_stats_snapshot().get('heatmap', {})
-            for key, count in buffer.items():
-                heatmap_data[key] = heatmap_data.get(key, 0) + count
-        
-        self.heatmap_widget.update_data(heatmap_data)
+            # Mouse Heatmap
+            if start_date is None:
+                raw_data = self.tracker.db.get_mouse_heatmap_range(
+                    datetime.date(2000, 1, 1),
+                    datetime.date.today()
+                )
+            else:
+                raw_data = self.tracker.db.get_mouse_heatmap_range(start_date, end_date)
+                
+            # raw_data is list of (x, y, count) tuples
+            # Convert to dict for widget
+            mouse_data = {(row[0], row[1]): row[2] for row in raw_data}
+            
+            # Add buffer if today
+            if self.heatmap_time_selector.current_range == 'today':
+                buffer = self.tracker.get_stats_snapshot().get('mouse_heatmap', {})
+                for (x, y), count in buffer.items():
+                    mouse_data[(x, y)] = mouse_data.get((x, y), 0) + count
+            
+            self.mouse_heatmap.update_data(mouse_data)
 
     def closeEvent(self, event):
         event.ignore()
