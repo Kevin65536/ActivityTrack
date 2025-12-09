@@ -6,3 +6,5 @@ __pycache__/
 
 # database
 *.db
+
+src/app_trace.txt
