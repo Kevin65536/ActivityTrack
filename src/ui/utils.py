@@ -3,6 +3,7 @@ from PySide6.QtGui import QPainter, QColor, QFont, QPen, QPixmap, QRadialGradien
 from PySide6.QtCore import Qt, QRect
 import numpy as np
 from scipy.ndimage import gaussian_filter
+import win32api
 
 # Standard US keyboard layout with scan codes
 # Format: (scan_code, label, row, col, width)
@@ -169,13 +170,50 @@ class MouseHeatmapWidget(QWidget):
         self.data = data or {}  # Format: {(x, y): count}
         self.setMinimumSize(800, 450)
         self.heatmap_cache = {} # Map screen_name -> QImage
-        self.packed_layout = [] # List of (screen_name, draw_rect, original_geometry)
-        
+        self.physical_map = {} # Map screen_name -> (x, y, w, h) (Physical)
+
     def update_data(self, data):
         self.data = data
         self.heatmap_cache = {} # Invalidate cache
+        self.update_physical_mapping()
         self.update()
         
+    def update_physical_mapping(self):
+        """Map Qt screens to Windows Physical Monitors by position."""
+        try:
+            # Get Logical Screens (Qt)
+            screens = QGuiApplication.screens()
+            if not screens: return
+            
+            # Sort by Y, then X to define a canonical order
+            sorted_screens = sorted(screens, key=lambda s: (s.geometry().y(), s.geometry().x()))
+            
+            # Get Physical Monitors (Windows)
+            monitors = win32api.EnumDisplayMonitors()
+            # Format: (hMonitor, hdc, (left, top, right, bottom))
+            # Sort by Top, then Left
+            sorted_monitors = sorted(monitors, key=lambda m: (m[2][1], m[2][0]))
+            
+            self.physical_map = {}
+            
+            # Map robustly (up to min length)
+            count = min(len(sorted_screens), len(sorted_monitors))
+            for i in range(count):
+                screen = sorted_screens[i]
+                rect = sorted_monitors[i][2] # (left, top, right, bottom)
+                
+                phys_x = rect[0]
+                phys_y = rect[1]
+                phys_w = rect[2] - rect[0]
+                phys_h = rect[3] - rect[1]
+                
+                self.physical_map[screen.name()] = (phys_x, phys_y, phys_w, phys_h)
+                
+        except Exception as e:
+            print(f"Error mapping monitors: {e}")
+            # Fallback to empty, will use dpr approximation if needed or just fail safely
+            pass
+
     def get_packed_layout(self):
         """Calculate the layout of screens with gaps removed."""
         screens = QGuiApplication.screens()
@@ -211,29 +249,43 @@ class MouseHeatmapWidget(QWidget):
 
     def generate_screen_heatmap(self, screen):
         """Generate heatmap for a specific screen area."""
-        geom = screen.geometry()
-        x0, y0 = geom.x(), geom.y()
-        w, h = geom.width(), geom.height()
+        
+        # Try to get physical rect from consistent mapping
+        s_name = screen.name()
+        if s_name in self.physical_map:
+            phys_x, phys_y, phys_w, phys_h = self.physical_map[s_name]
+        else:
+            # Fallback (e.g. if mapping failed)
+            geom = screen.geometry()
+            dpr = screen.devicePixelRatio()
+            phys_x = geom.x() * dpr # Might be wrong for 2nd monitor
+            phys_y = geom.y() * dpr
+            phys_w = geom.width() * dpr
+            phys_h = geom.height() * dpr
         
         if not self.data:
             return None
 
         # Grid Setup
-        scale = 0.25 # Downscale factor
-        grid_w = int(w * scale) + 1
-        grid_h = int(h * scale) + 1
+        # We want the grid to represent the physical pixels but scaled down for performance/memory.
+        # If we use the same 0.25 scale on physical, the grid will be larger (higher res).
+        scale = 0.25 
+        grid_w = int(phys_w * scale) + 1
+        grid_h = int(phys_h * scale) + 1
         
         grid = np.zeros((grid_h, grid_w), dtype=np.float32)
         
-        # Accumulate data inside this screen's rect
-        # Optimized: Iterate only if we had spatial indexing, but dict iteration is fast enough.
-        # We can optimize by checking bounds before calc.
-        
         has_data = False
         for (px, py), count in self.data.items():
-            if x0 <= px < x0 + w and y0 <= py < y0 + h:
-                gx = int((px - x0) * scale)
-                gy = int((py - y0) * scale)
+            # Check if point is within PHYSICAL bounds
+            if phys_x <= px < phys_x + phys_w and phys_y <= py < phys_y + phys_h:
+                # Map to local grid
+                rel_x = px - phys_x
+                rel_y = py - phys_y
+                
+                gx = int(rel_x * scale)
+                gy = int(rel_y * scale)
+                
                 if 0 <= gx < grid_w and 0 <= gy < grid_h:
                     grid[gy, gx] += count
                     has_data = True
@@ -242,16 +294,11 @@ class MouseHeatmapWidget(QWidget):
             return None
             
         # Gaussian Filter
-        sigma = 8.0
+        sigma = 8.0 # You might want to scale sigma too if grid is higher res? 
+                    # If grid is 1.5x larger, same sigma means tighter spots. 
+                    # Let's keep 8.0 for now.
         heatmap = gaussian_filter(grid, sigma=sigma)
         
-        # Normalize (Globally or locally? Locally allows seeing hotspots on low-usage screens easier)
-        # But Globally preserves relative intensity. 
-        # Let's do Local normalization for better visibility per screen unless requested otherwise.
-        # User said "Match WhatPulse", usually global. 
-        # BUT, if we split generation, we need global max.
-        # Let's quick-scan global max from data? No, that's raw counts.
-        # We can stick to local normalization for now, it ensures every screen looks "used".
         max_val = np.max(heatmap)
         if max_val > 0:
             heatmap /= max_val
@@ -344,10 +391,17 @@ class MouseHeatmapWidget(QWidget):
                 painter.drawImage(QRect(int(dx), int(dy), int(dw), int(dh)), img)
                 
             # Label
+            if s_name in self.physical_map:
+                px, py, pw, ph = self.physical_map[s_name]
+                label_res = f"{pw}x{ph}"
+            else:
+                dpr = screen.devicePixelRatio()
+                label_res = f"{int(real.width()*dpr)}x{int(real.height()*dpr)}"
+            
             painter.setPen(QColor(200, 200, 200))
             painter.setFont(QFont("Segoe UI", 9))
             painter.drawText(int(dx + 5), int(dy + 20), f"{s_name}")
             painter.setPen(QColor(120, 120, 120))
             painter.setFont(QFont("Segoe UI", 8))
-            painter.drawText(int(dx + 5), int(dy + 40), f"{real.width()}x{real.height()}")
+            painter.drawText(int(dx + 5), int(dy + 40), label_res)
 
