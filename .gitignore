@@ -9,3 +9,7 @@ __pycache__/
 
 src/app_trace.txt
 src/tracker_error.log
+
+# build files
+build/
+dist/
