@@ -122,7 +122,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.tracker = tracker
         self.setWindowTitle("Input Tracker")
-        self.resize(1000, 700)
+        self.resize(1200, 800)
         
         # Dark Theme
         self.setStyleSheet("""

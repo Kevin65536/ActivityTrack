@@ -94,10 +94,10 @@ class HeatmapWidget(QWidget):
     def __init__(self, data=None):
         super().__init__()
         self.data = data or {}
-        self.setMinimumSize(800, 300)
-        self.key_size = 45
+        self.setMinimumSize(800, 450)
+        self.base_key_size = 45
         self.key_spacing = 3
-        self.margin = 20
+        self.margin = 30
 
     def update_data(self, data):
         self.data = data
@@ -116,12 +116,25 @@ class HeatmapWidget(QWidget):
             painter.drawText(self.rect(), Qt.AlignCenter, "Start typing to see heatmap...")
             return
         
-        # Calculate total size of keyboard
+        # Calculate total size of keyboard in base units
         max_col_units = max(col + width for _, _, _, col, width in KEYBOARD_LAYOUT)
         max_row_units = max(row + 1 for _, _, row, _, _ in KEYBOARD_LAYOUT)
         
-        total_w = max_col_units * self.key_size + (max_col_units - 1) * self.key_spacing
-        total_h = max_row_units * self.key_size + (max_row_units - 1) * self.key_spacing
+        # Calculate scale factor to fit the widget while maintaining aspect ratio
+        base_total_w = max_col_units * self.base_key_size + (max_col_units - 1) * self.key_spacing
+        base_total_h = max_row_units * self.base_key_size + (max_row_units - 1) * self.key_spacing
+        
+        available_w = self.width() - 2 * self.margin
+        available_h = self.height() - 2 * self.margin
+        
+        scale = min(available_w / base_total_w, available_h / base_total_h)
+        scale = max(scale, 1.0)  # Don't shrink below base size
+        
+        key_size = self.base_key_size * scale
+        spacing = self.key_spacing * scale
+        
+        total_w = max_col_units * key_size + (max_col_units - 1) * spacing
+        total_h = max_row_units * key_size + (max_row_units - 1) * spacing
         
         # Calculate offsets to center
         start_x = (self.width() - total_w) / 2
@@ -129,11 +142,17 @@ class HeatmapWidget(QWidget):
         
         max_count = max(self.data.values()) if self.data else 1
         
+        # Scale font sizes
+        label_font_size = max(9, int(11 * scale))
+        label_font_size_small = max(7, int(9 * scale))
+        count_font_size = max(6, int(7 * scale))
+        corner_radius = int(5 * scale)
+        
         for scan_code, label, row, col, width in KEYBOARD_LAYOUT:
-            x = start_x + col * (self.key_size + self.key_spacing)
-            y = start_y + row * (self.key_size + self.key_spacing)
-            w = width * self.key_size + (width - 1) * self.key_spacing
-            h = self.key_size
+            x = start_x + col * (key_size + spacing)
+            y = start_y + row * (key_size + spacing)
+            w = width * key_size + (width - 1) * spacing
+            h = key_size
             
             # Get heat level
             count = self.data.get(scan_code, 0)
@@ -146,7 +165,7 @@ class HeatmapWidget(QWidget):
             # Draw key background
             painter.setBrush(bg_color)
             painter.setPen(QPen(QColor(80, 80, 80), 1))
-            painter.drawRoundedRect(int(x), int(y), int(w), int(h), 5, 5)
+            painter.drawRoundedRect(int(x), int(y), int(w), int(h), corner_radius, corner_radius)
             
             # Draw label
             if count > 0:
@@ -154,21 +173,21 @@ class HeatmapWidget(QWidget):
             else:
                 painter.setPen(QColor(180, 180, 180))  # Light text on dark bg
             
-            font = QFont("Arial", 9 if len(label) > 2 else 11)
-            painter.setFont(font)
+            font_size = label_font_size_small if len(label) > 2 else label_font_size
+            painter.setFont(QFont("Arial", font_size))
             painter.drawText(int(x), int(y), int(w), int(h), Qt.AlignCenter, label)
             
             # Draw count if non-zero
             if count > 0:
-                painter.setFont(QFont("Arial", 7))
-                painter.drawText(int(x + 2), int(y + h - 12), str(count))
+                painter.setFont(QFont("Arial", count_font_size))
+                painter.drawText(int(x + 2 * scale), int(y + h - 12 * scale), str(count))
 
 
 class MouseHeatmapWidget(QWidget):
     def __init__(self, data=None):
         super().__init__()
         self.data = data or {}  # Format: {(x, y): count}
-        self.setMinimumSize(800, 450)
+        self.setMinimumSize(800, 450)  # Match HeatmapWidget to prevent resize on switch
         self.heatmap_cache = {} # Map screen_name -> QImage
         self.physical_map = {} # Map screen_name -> (x, y, w, h) (Physical)
 
