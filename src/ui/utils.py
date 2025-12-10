@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, QRect
 import numpy as np
 from scipy.ndimage import gaussian_filter
 import win32api
+from ..config import get_theme_color, HEATMAP_THEMES
 
 # Standard US keyboard layout with scan codes
 # Format: (scan_code, label, row, col, width)
@@ -55,49 +56,34 @@ KEYBOARD_LAYOUT = [
 ]
 
 
-def get_heat_color(ratio):
-    """Get color based on heat ratio (0.0 to 1.0). Uses a softer, less saturated gradient.
+def get_heat_color(ratio, theme='default'):
+    """Get color based on heat ratio (0.0 to 1.0).
     
-    Colors transition: Soft Blue → Teal → Soft Green → Warm Yellow → Soft Orange
-    All colors have reduced saturation for a more pleasing look.
+    Args:
+        ratio: Heat ratio from 0.0 to 1.0
+        theme: Theme name ('default', 'fire', 'ocean', etc.)
+    
+    Returns:
+        QColor for the given ratio
     """
-    # Define color stops with reduced saturation (HSL-style approach)
-    # Each tuple: (r, g, b) - all values are softer/muted
-    if ratio < 0.25:
-        # Soft Blue (#4A6FA5) to Teal (#4A8F8F)
-        t = ratio / 0.25
-        r = int(74 + (74 - 74) * t)
-        g = int(111 + (143 - 111) * t)
-        b = int(165 + (143 - 165) * t)
-    elif ratio < 0.5:
-        # Teal (#4A8F8F) to Soft Green (#6BAF6B)
-        t = (ratio - 0.25) / 0.25
-        r = int(74 + (107 - 74) * t)
-        g = int(143 + (175 - 143) * t)
-        b = int(143 + (107 - 143) * t)
-    elif ratio < 0.75:
-        # Soft Green (#6BAF6B) to Warm Yellow (#D4B85A)
-        t = (ratio - 0.5) / 0.25
-        r = int(107 + (212 - 107) * t)
-        g = int(175 + (184 - 175) * t)
-        b = int(107 + (90 - 107) * t)
-    else:
-        # Warm Yellow (#D4B85A) to Soft Coral (#D4736B)
-        t = (ratio - 0.75) / 0.25
-        r = int(212 + (212 - 212) * t)
-        g = int(184 + (115 - 184) * t)
-        b = int(90 + (107 - 90) * t)
+    r, g, b = get_theme_color(theme, ratio)
     return QColor(r, g, b)
 
 
 class HeatmapWidget(QWidget):
-    def __init__(self, data=None):
+    def __init__(self, data=None, theme='default'):
         super().__init__()
         self.data = data or {}
+        self.theme = theme
         self.setMinimumSize(800, 450)
         self.base_key_size = 45
         self.key_spacing = 3
         self.margin = 30
+    
+    def set_theme(self, theme):
+        """Set the heatmap color theme."""
+        self.theme = theme
+        self.update()
 
     def update_data(self, data):
         self.data = data
@@ -158,7 +144,7 @@ class HeatmapWidget(QWidget):
             count = self.data.get(scan_code, 0)
             if count > 0 and max_count > 0:
                 ratio = min(count / max_count, 1.0)
-                bg_color = get_heat_color(ratio)
+                bg_color = get_heat_color(ratio, self.theme)
             else:
                 bg_color = QColor(60, 60, 60)
             

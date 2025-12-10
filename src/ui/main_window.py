@@ -8,6 +8,8 @@ from .utils import HeatmapWidget, MouseHeatmapWidget
 from .history_chart import HistoryChartWidget
 from .app_stats_widget import AppStatsWidget
 from .pie_chart import AppPieChartWidget
+from .settings import SettingsWidget
+from ..config import Config
 import datetime
 
 
@@ -120,9 +122,10 @@ class StatCard(QFrame):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, tracker):
+    def __init__(self, tracker, config: Config = None):
         super().__init__()
         self.tracker = tracker
+        self.config = config or Config()
         self.setWindowTitle("Input Tracker")
         self.resize(900, 650)
         
@@ -171,6 +174,11 @@ class MainWindow(QMainWindow):
         self.history_tab = QWidget()
         self.setup_history()
         self.tabs.addTab(self.history_tab, "History")
+        
+        # Settings Tab
+        self.settings_tab = SettingsWidget(self.config, self.tracker.db)
+        self.settings_tab.theme_changed.connect(self.on_theme_changed)
+        self.tabs.addTab(self.settings_tab, "Settings")
 
         # Hook after all tabs are created
         self.tabs.currentChanged.connect(self.on_tab_changed)
@@ -352,7 +360,7 @@ class MainWindow(QMainWindow):
         # Stacked Widget for Heatmaps
         self.heatmap_stack = QStackedWidget()
         
-        self.keyboard_heatmap = HeatmapWidget()
+        self.keyboard_heatmap = HeatmapWidget(theme=self.config.heatmap_theme)
         self.mouse_heatmap = MouseHeatmapWidget()
         
         self.heatmap_stack.addWidget(self.keyboard_heatmap)
@@ -744,6 +752,18 @@ class MainWindow(QMainWindow):
             
             self.mouse_heatmap.update_data(mouse_data)
 
+    def on_theme_changed(self, theme_name):
+        """Handle heatmap theme change from settings."""
+        self.keyboard_heatmap.set_theme(theme_name)
+        self.update_heatmap()  # Refresh to show new theme
+
     def closeEvent(self, event):
-        event.ignore()
-        self.hide()
+        """Handle window close event based on minimize_to_tray setting."""
+        if self.config.minimize_to_tray:
+            event.ignore()
+            self.hide()
+        else:
+            # Actually quit the application
+            event.accept()
+            from PySide6.QtWidgets import QApplication
+            QApplication.instance().quit()

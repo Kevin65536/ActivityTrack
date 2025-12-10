@@ -9,6 +9,7 @@ from src.tracker import InputTracker
 from src.ui.main_window import MainWindow
 from src.ui.tray_icon import TrayIcon
 from src.ui.overlay import OverlayWindow
+from src.config import Config
 
 class Bridge(QObject):
     key_pressed = Signal()
@@ -39,8 +40,11 @@ def main():
         tracker = InputTracker(on_key_press_callback=bridge.key_pressed.emit)
         tracker.start()
     
+    # Initialize config
+    config = Config()
+    
     # Initialize UI
-    window = MainWindow(tracker)
+    window = MainWindow(tracker, config)
     tray = TrayIcon()
     overlay = OverlayWindow()
     overlay.show()

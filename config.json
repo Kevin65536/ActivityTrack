@@ -1,0 +1,7 @@
+{
+  "autostart": true,
+  "data_retention_days": -1,
+  "heatmap_theme": "default",
+  "minimize_to_tray": true,
+  "show_notifications": false
+}
