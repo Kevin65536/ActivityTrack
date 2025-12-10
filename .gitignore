@@ -8,3 +8,4 @@ __pycache__/
 *.db
 
 src/app_trace.txt
+src/tracker_error.log
