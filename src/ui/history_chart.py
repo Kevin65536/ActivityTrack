@@ -278,10 +278,12 @@ class InsightWidget(BaseChartWidget):
                 
         import numpy as np
         x = np.arange(len(labels))
-        width = 0.35
         
-        ax.bar(x - width/2, avg_keys, width, label='Avg Keys', color='#00e676')
-        ax.bar(x + width/2, avg_clicks, width, label='Avg Clicks', color='#2196f3')
+        # Plot keys as bars
+        ax.bar(x, avg_keys, color='#00e676', alpha=0.7, label='Avg Keys')
+        
+        # Plot clicks as line
+        ax.plot(x, avg_clicks, 'o-', color='#2196f3', linewidth=2, label='Avg Clicks')
         
         self.set_common_style(ax, "Average Activity by Day of Week")
         ax.set_xticks(x)
@@ -296,8 +298,11 @@ class InsightWidget(BaseChartWidget):
         avg_keys = [data_map[h][1] if h in data_map else 0 for h in hours]
         avg_clicks = [data_map[h][2] if h in data_map else 0 for h in hours]
         
-        ax.plot(hours, avg_keys, 'o-', color='#ffb74d', label='Avg Keys')
-        ax.plot(hours, avg_clicks, 's--', color='#2196f3', label='Avg Clicks', alpha=0.6)
+        # Plot keys as bars
+        ax.bar(hours, avg_keys, color='#00e676', alpha=0.7, label='Avg Keys')
+        
+        # Plot clicks as line
+        ax.plot(hours, avg_clicks, 'o-', color='#2196f3', linewidth=2, label='Avg Clicks')
         
         self.set_common_style(ax, "Average Activity by Hour of Day")
         ax.set_xticks(hours[::2])
@@ -316,25 +321,11 @@ class HistoryChartWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
         
-        # --- Top Bar: Filter ---
+        # --- Combined Top Bar: Tabs (left) + Filter (right) ---
         top_bar = QHBoxLayout()
-        top_bar.addStretch() # Push filter to right
+        top_bar.setSpacing(20)
         
-        lbl_scope = QLabel("Scope:")
-        lbl_scope.setStyleSheet("color: #aaaaaa; font-weight: bold;")
-        top_bar.addWidget(lbl_scope)
-        
-        self.app_combo = QComboBox()
-        self.app_combo.setStyleSheet(COMBO_STYLE)
-        self.app_combo.currentTextChanged.connect(self.on_app_changed)
-        top_bar.addWidget(self.app_combo)
-        
-        layout.addLayout(top_bar)
-        
-        # --- Tab Navigation ---
-        tabs_layout = QHBoxLayout()
-        tabs_layout.setSpacing(20)
-        
+        # Tab Navigation (left side)
         self.btn_timeline = QPushButton("Timeline")
         self.btn_timeline.setCheckable(True)
         self.btn_timeline.setChecked(True)
@@ -346,11 +337,21 @@ class HistoryChartWidget(QWidget):
         self.btn_insights.setStyleSheet(BTN_STYLE_TAB)
         self.btn_insights.clicked.connect(lambda: self.switch_view(1))
         
-        tabs_layout.addWidget(self.btn_timeline)
-        tabs_layout.addWidget(self.btn_insights)
-        tabs_layout.addStretch()
+        top_bar.addWidget(self.btn_timeline)
+        top_bar.addWidget(self.btn_insights)
+        top_bar.addStretch()  # Push scope filter to right
         
-        layout.addLayout(tabs_layout)
+        # Scope Filter (right side)
+        lbl_scope = QLabel("Scope:")
+        lbl_scope.setStyleSheet("color: #aaaaaa; font-weight: bold;")
+        top_bar.addWidget(lbl_scope)
+        
+        self.app_combo = QComboBox()
+        self.app_combo.setStyleSheet(COMBO_STYLE)
+        self.app_combo.currentTextChanged.connect(self.on_app_changed)
+        top_bar.addWidget(self.app_combo)
+        
+        layout.addLayout(top_bar)
         
         # --- Stacked Content ---
         self.stack = QStackedWidget()
