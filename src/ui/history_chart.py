@@ -9,6 +9,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import datetime
+from ..i18n import tr, tr_list
 
 # Common Styles
 BTN_STYLE_BAR = """
@@ -132,10 +133,10 @@ class TimelineWidget(BaseChartWidget):
         
         # Buttons
         self.setup_buttons([
-            ('today', 'Today'),
-            ('week', 'Week'),
-            ('month', 'Month'),
-            ('year', 'Year')
+            ('today', tr('time.today')),
+            ('week', tr('time.week')),
+            ('month', tr('time.month')),
+            ('year', tr('time.year'))
         ])
         self.set_active_button('today')
         
@@ -175,11 +176,11 @@ class TimelineWidget(BaseChartWidget):
         clicks = [clicks_map.get(h, 0) for h in hours]
         
         # Plot keys as bars
-        ax.bar(hours, keys, color='#00e676', alpha=0.7, label='Keys')
+        ax.bar(hours, keys, color='#00e676', alpha=0.7, label=tr('history.legend.keys'))
         
-        ax.plot(hours, clicks, 'o-', color='#2196f3', linewidth=2, label='Clicks')
+        ax.plot(hours, clicks, 'o-', color='#2196f3', linewidth=2, label=tr('history.legend.clicks'))
         
-        self.set_common_style(ax, "Activity by Hour (Today)")
+        self.set_common_style(ax, tr('history.chart.today'))
         ax.set_xlabel("Hour")
         ax.set_ylabel("Count")
         ax.legend()
@@ -200,7 +201,7 @@ class TimelineWidget(BaseChartWidget):
         
         if not raw_data:
             ax = self.figure.add_subplot(111)
-            ax.text(0.5, 0.5, "No Data", ha='center', color='gray')
+            ax.text(0.5, 0.5, tr('history.no_data'), ha='center', color='gray')
             ax.set_facecolor('#1e1e1e')
             return
 
@@ -215,11 +216,11 @@ class TimelineWidget(BaseChartWidget):
         # Plot keys as bars (convert dates to numbers for bar width logic if needed, but matplotlib handles dates well)
         # We might need to adjust width if it's too thin/thick. Auto usually works okay for simple time series.
         # Let's try standard bar first.
-        ax.bar(dates, keys, color='#00e676', alpha=0.7, label='Keys')
+        ax.bar(dates, keys, color='#00e676', alpha=0.7, label=tr('history.legend.keys'))
         
-        ax.plot(dates, clicks, 'o-', color='#2196f3', linewidth=2, label='Clicks')
+        ax.plot(dates, clicks, 'o-', color='#2196f3', linewidth=2, label=tr('history.legend.clicks'))
         
-        self.set_common_style(ax, "Historical Activity")
+        self.set_common_style(ax, tr('history.chart.history'))
         ax.legend()
         self.figure.autofmt_xdate()
 
@@ -232,8 +233,8 @@ class InsightWidget(BaseChartWidget):
         self.current_mode = 'weekday'
         
         self.setup_buttons([
-            ('weekday', 'Weekday'),
-            ('hour', 'Hourly')
+            ('weekday', tr('history.weekday')),
+            ('hour', tr('history.hourly'))
         ])
         self.set_active_button('weekday')
         
@@ -262,7 +263,7 @@ class InsightWidget(BaseChartWidget):
         days_map = {int(r[0]): r for r in data}
         
         ordered_indices = [1, 2, 3, 4, 5, 6, 0]
-        labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        labels = tr_list('history.weekdays')
         
         avg_keys = []
         avg_clicks = []
@@ -280,12 +281,12 @@ class InsightWidget(BaseChartWidget):
         x = np.arange(len(labels))
         
         # Plot keys as bars
-        ax.bar(x, avg_keys, color='#00e676', alpha=0.7, label='Avg Keys')
+        ax.bar(x, avg_keys, color='#00e676', alpha=0.7, label=tr('history.legend.avg_keys'))
         
         # Plot clicks as line
-        ax.plot(x, avg_clicks, 'o-', color='#2196f3', linewidth=2, label='Avg Clicks')
+        ax.plot(x, avg_clicks, 'o-', color='#2196f3', linewidth=2, label=tr('history.legend.avg_clicks'))
         
-        self.set_common_style(ax, "Average Activity by Day of Week")
+        self.set_common_style(ax, tr('history.chart.weekday'))
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
         ax.legend()
@@ -299,12 +300,12 @@ class InsightWidget(BaseChartWidget):
         avg_clicks = [data_map[h][2] if h in data_map else 0 for h in hours]
         
         # Plot keys as bars
-        ax.bar(hours, avg_keys, color='#00e676', alpha=0.7, label='Avg Keys')
+        ax.bar(hours, avg_keys, color='#00e676', alpha=0.7, label=tr('history.legend.avg_keys'))
         
         # Plot clicks as line
-        ax.plot(hours, avg_clicks, 'o-', color='#2196f3', linewidth=2, label='Avg Clicks')
+        ax.plot(hours, avg_clicks, 'o-', color='#2196f3', linewidth=2, label=tr('history.legend.avg_clicks'))
         
-        self.set_common_style(ax, "Average Activity by Hour of Day")
+        self.set_common_style(ax, tr('history.chart.hourly'))
         ax.set_xticks(hours[::2])
         ax.legend()
 
@@ -326,13 +327,13 @@ class HistoryChartWidget(QWidget):
         top_bar.setSpacing(20)
         
         # Tab Navigation (left side)
-        self.btn_timeline = QPushButton("Timeline")
+        self.btn_timeline = QPushButton(tr('history.timeline'))
         self.btn_timeline.setCheckable(True)
         self.btn_timeline.setChecked(True)
         self.btn_timeline.setStyleSheet(BTN_STYLE_TAB)
         self.btn_timeline.clicked.connect(lambda: self.switch_view(0))
         
-        self.btn_insights = QPushButton("Insights")
+        self.btn_insights = QPushButton(tr('history.insights'))
         self.btn_insights.setCheckable(True)
         self.btn_insights.setStyleSheet(BTN_STYLE_TAB)
         self.btn_insights.clicked.connect(lambda: self.switch_view(1))
@@ -342,7 +343,7 @@ class HistoryChartWidget(QWidget):
         top_bar.addStretch()  # Push scope filter to right
         
         # Scope Filter (right side)
-        lbl_scope = QLabel("Scope:")
+        lbl_scope = QLabel(tr('history.scope'))
         lbl_scope.setStyleSheet("color: #aaaaaa; font-weight: bold;")
         top_bar.addWidget(lbl_scope)
         
@@ -391,8 +392,9 @@ class HistoryChartWidget(QWidget):
         self.app_map = {}
         
         # "All Applications"
-        self.app_combo.addItem("All Applications")
-        self.app_map["All Applications"] = None
+        all_apps_text = tr('history.all_apps')
+        self.app_combo.addItem(all_apps_text)
+        self.app_map[all_apps_text] = None
         
         # Populate
         items = []

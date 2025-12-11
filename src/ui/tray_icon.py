@@ -3,6 +3,7 @@ import sys
 from PySide6.QtWidgets import QSystemTrayIcon, QMenu, QApplication
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor, QBrush
 from PySide6.QtCore import Signal, Qt
+from ..i18n import tr
 
 class TrayIcon(QSystemTrayIcon):
     show_window_signal = Signal()
@@ -14,18 +15,18 @@ class TrayIcon(QSystemTrayIcon):
         # Load icon from file, fallback to programmatic icon
         self.setIcon(self._load_icon())
         self.setVisible(True)
-        self.setToolTip("ActivityTrack")
+        self.setToolTip(tr('tray.tooltip'))
         
         # Create menu
         self.menu = QMenu()
         
-        self.show_action = QAction("Show Dashboard", self)
+        self.show_action = QAction(tr('tray.show'), self)
         self.show_action.triggered.connect(self.show_window_signal.emit)
         self.menu.addAction(self.show_action)
         
         self.menu.addSeparator()
         
-        self.quit_action = QAction("Quit", self)
+        self.quit_action = QAction(tr('tray.quit'), self)
         self.quit_action.triggered.connect(self.quit_signal.emit)
         self.menu.addAction(self.quit_action)
         

@@ -15,6 +15,7 @@ DEFAULT_CONFIG = {
     'heatmap_theme': 'default',  # 'default', 'fire', 'ocean', 'monochrome'
     'minimize_to_tray': True,
     'show_notifications': True,
+    'language': 'en',  # 'en' for English, 'zh' for Chinese
 }
 
 CONFIG_FILE = 'config.json'
@@ -134,6 +135,15 @@ class Config:
     @show_notifications.setter
     def show_notifications(self, value):
         self._config['show_notifications'] = value
+        self.save()
+    
+    @property
+    def language(self):
+        return self._config.get('language', 'en')
+    
+    @language.setter
+    def language(self, value):
+        self._config['language'] = value
         self.save()
     
     @staticmethod

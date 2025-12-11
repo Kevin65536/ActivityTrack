@@ -11,6 +11,7 @@ from .pie_chart import AppPieChartWidget
 from .settings import SettingsWidget
 from .screen_time_widget import ScreenTimeWidget
 from ..config import Config
+from ..i18n import tr, get_i18n, set_language
 import datetime
 
 
@@ -27,16 +28,10 @@ class TimeRangeSelector(QWidget):
         layout.setSpacing(5)
         
         self.buttons = {}
-        ranges = [
-            ('today', 'Today'),
-            ('week', 'Week'),
-            ('month', 'Month'),
-            ('year', 'Year'),
-            ('all', 'All Time')
-        ]
+        self.range_keys = ['today', 'week', 'month', 'year', 'all']
         
-        for key, label in ranges:
-            btn = QPushButton(label)
+        for key in self.range_keys:
+            btn = QPushButton(tr(f'time.{key}'))
             btn.setCheckable(True)
             btn.setMinimumWidth(80)
             btn.clicked.connect(lambda checked, k=key: self.on_range_selected(k))
@@ -67,6 +62,11 @@ class TimeRangeSelector(QWidget):
                 font-weight: bold;
             }
         """)
+    
+    def retranslate_ui(self):
+        """Update button text for current language."""
+        for key in self.range_keys:
+            self.buttons[key].setText(tr(f'time.{key}'))
     
     def on_range_selected(self, key):
         for k, btn in self.buttons.items():
@@ -127,8 +127,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.tracker = tracker
         self.config = config or Config()
-        self.setWindowTitle("ActivityTrack")
+        self.setWindowTitle(tr('app.title'))
         self.resize(900, 650)
+        
+        # Initialize language from config
+        set_language(self.config.language)
         
         # Dark Theme
         self.setStyleSheet("""
@@ -159,31 +162,32 @@ class MainWindow(QMainWindow):
         # Dashboard Tab
         self.dashboard_tab = QWidget()
         self.setup_dashboard()
-        self.tabs.addTab(self.dashboard_tab, "Dashboard")
+        self.tabs.addTab(self.dashboard_tab, tr('tab.dashboard'))
         
         # Heatmap Tab
         self.heatmap_tab = QWidget()
         self.setup_heatmap()
-        self.tabs.addTab(self.heatmap_tab, "Heatmap")
+        self.tabs.addTab(self.heatmap_tab, tr('tab.heatmap'))
         
         # Applications Tab
         self.apps_tab = QWidget()
         self.setup_apps()
-        self.tabs.addTab(self.apps_tab, "Applications")
+        self.tabs.addTab(self.apps_tab, tr('tab.applications'))
         
         # History Tab
         self.history_tab = QWidget()
         self.setup_history()
-        self.tabs.addTab(self.history_tab, "History")
+        self.tabs.addTab(self.history_tab, tr('tab.history'))
         
         # Screen Time Tab
         self.screen_time_tab = ScreenTimeWidget(self.tracker, self.tracker.db)
-        self.tabs.addTab(self.screen_time_tab, "Screen Time")
+        self.tabs.addTab(self.screen_time_tab, tr('tab.screen_time'))
         
         # Settings Tab
         self.settings_tab = SettingsWidget(self.config, self.tracker.db)
         self.settings_tab.theme_changed.connect(self.on_theme_changed)
-        self.tabs.addTab(self.settings_tab, "Settings")
+        self.settings_tab.language_changed.connect(self.on_language_changed)
+        self.tabs.addTab(self.settings_tab, tr('tab.settings'))
 
         # Hook after all tabs are created
         self.tabs.currentChanged.connect(self.on_tab_changed)
@@ -227,7 +231,7 @@ class MainWindow(QMainWindow):
         # Header with Title and Time Range Selector
         header = QHBoxLayout()
         
-        self.dashboard_title = QLabel("Today's Statistics")
+        self.dashboard_title = QLabel(tr('dashboard.title.today'))
         self.dashboard_title.setFont(QFont("Arial", 28, QFont.Bold))
         self.dashboard_title.setStyleSheet("color: white;")
         header.addWidget(self.dashboard_title)
@@ -244,10 +248,10 @@ class MainWindow(QMainWindow):
         grid = QGridLayout()
         grid.setSpacing(20)
         
-        self.card_keys = StatCard("Keystrokes", 0)
-        self.card_clicks = StatCard("Mouse Clicks", 0)
-        self.card_distance = StatCard("Mouse Distance", 0.0, "m")
-        self.card_scroll = StatCard("Scroll Distance", 0, "steps")
+        self.card_keys = StatCard(tr('dashboard.card.keystrokes'), 0)
+        self.card_clicks = StatCard(tr('dashboard.card.clicks'), 0)
+        self.card_distance = StatCard(tr('dashboard.card.distance'), 0.0, tr('dashboard.unit.meters'))
+        self.card_scroll = StatCard(tr('dashboard.card.scroll'), 0, tr('dashboard.unit.steps'))
         
         grid.addWidget(self.card_keys, 0, 0)
         grid.addWidget(self.card_clicks, 0, 1)
@@ -269,10 +273,10 @@ class MainWindow(QMainWindow):
         self.view_switcher_layout = QHBoxLayout()
         self.view_switcher_layout.setSpacing(0)
         
-        self.btn_keyboard = QPushButton("Keyboard")
+        self.btn_keyboard = QPushButton(tr('heatmap.keyboard'))
         self.btn_keyboard.setCheckable(True)
         self.btn_keyboard.setChecked(True)
-        self.btn_mouse = QPushButton("Mouse")
+        self.btn_mouse = QPushButton(tr('heatmap.mouse'))
         self.btn_mouse.setCheckable(True)
         
         # Determine strict fixed size to ensure consistency
@@ -358,7 +362,6 @@ class MainWindow(QMainWindow):
                 border: 1px solid #3d3d3d;
             }
         """)
-        self.heatmap_app_filter.addItem("All Applications")
         self.heatmap_app_filter.currentTextChanged.connect(self.on_heatmap_app_changed)
         header.addWidget(self.heatmap_app_filter)
         
@@ -402,11 +405,11 @@ class MainWindow(QMainWindow):
 
             # View toggle (Chart/Table) - leftmost
             self.apps_view_group = QButtonGroup(self)
-            self.btn_apps_chart = QPushButton("Chart")
+            self.btn_apps_chart = QPushButton(tr('apps.chart'))
             self.btn_apps_chart.setCheckable(True)
             self.btn_apps_chart.setChecked(True)
             self.btn_apps_chart.setFixedSize(80, 32)
-            self.btn_apps_table = QPushButton("Table")
+            self.btn_apps_table = QPushButton(tr('apps.table'))
             self.btn_apps_table.setCheckable(True)
             self.btn_apps_table.setFixedSize(80, 32)
             self.apps_view_group.addButton(self.btn_apps_chart, 0)
@@ -420,7 +423,7 @@ class MainWindow(QMainWindow):
             # Metric selector as dropdown (visible always, disabled in Table view)
             self.apps_metric_combo = QComboBox()
             self.apps_metric_combo.setFixedWidth(120)
-            self.apps_metric_combo.addItems(["Keys", "Clicks", "Scrolls", "Distance"])
+            self.apps_metric_combo.addItems([tr('apps.metric.keys'), tr('apps.metric.clicks'), tr('apps.metric.scrolls'), tr('apps.metric.distance')])
             self.apps_metric_combo.currentIndexChanged.connect(self.on_apps_metric_changed)
             self.apps_metric_combo.setStyleSheet("""
                 QComboBox {
@@ -602,14 +605,14 @@ class MainWindow(QMainWindow):
 
     def on_time_range_changed(self, range_key):
         """Handle time range selection change in dashboard."""
-        titles = {
-            'today': "Today's Statistics",
-            'week': "This Week's Statistics",
-            'month': "This Month's Statistics",
-            'year': "This Year's Statistics",
-            'all': "All Time Statistics"
+        title_keys = {
+            'today': 'dashboard.title.today',
+            'week': 'dashboard.title.week',
+            'month': 'dashboard.title.month',
+            'year': 'dashboard.title.year',
+            'all': 'dashboard.title.all'
         }
-        self.dashboard_title.setText(titles.get(range_key, "Statistics"))
+        self.dashboard_title.setText(tr(title_keys.get(range_key, 'dashboard.title.today')))
         self.update_stats()
 
     def on_heatmap_range_changed(self, range_key):
@@ -625,7 +628,7 @@ class MainWindow(QMainWindow):
         current_text = self.heatmap_app_filter.currentText()
         self.heatmap_app_filter.blockSignals(True)
         self.heatmap_app_filter.clear()
-        self.heatmap_app_filter.addItem("All Applications")
+        self.heatmap_app_filter.addItem(tr('heatmap.all_apps'))
         
         # Get all apps from database
         apps = self.tracker.db.get_all_apps()
@@ -773,6 +776,12 @@ class MainWindow(QMainWindow):
         """Handle heatmap theme change from settings."""
         self.keyboard_heatmap.set_theme(theme_name)
         self.update_heatmap()  # Refresh to show new theme
+
+    def on_language_changed(self, lang_code):
+        """Handle language change from settings."""
+        # The actual UI text update will happen on next app restart
+        # But we can update the window title immediately
+        self.setWindowTitle(tr('app.title'))
 
     def closeEvent(self, event):
         """Handle window close event based on minimize_to_tray setting."""

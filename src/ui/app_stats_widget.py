@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, 
                                  QTableWidgetItem, QHeaderView, QLabel, QFileIconProvider)
 from PySide6.QtCore import Qt, QFileInfo
+from ..i18n import tr
 
 class AppStatsWidget(QWidget):
     def __init__(self):
@@ -15,7 +16,11 @@ class AppStatsWidget(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(5)
         self.table.setHorizontalHeaderLabels([
-            "Application", "Keys", "Clicks", "Scrolls", "Distance"
+            tr('apps.header.application'), 
+            tr('apps.header.keys'), 
+            tr('apps.header.clicks'), 
+            tr('apps.header.scrolls'), 
+            tr('apps.header.distance')
         ])
         
         # Styling

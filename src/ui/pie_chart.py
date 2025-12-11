@@ -3,6 +3,7 @@ from PySide6.QtCore import Qt
 import math
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from ..i18n import tr
 
 # Color palette for pie slices (visually distinct, pleasant colors)
 PIE_COLORS = [
@@ -62,7 +63,7 @@ class PieChartWidget(QWidget):
             top = items[:6]
             others = sum(v for _, v in items[6:])
             if others > 0:
-                top.append(("Others", others))
+                top.append((tr('apps.others'), others))
             items = top
 
         self.data = items
@@ -74,7 +75,7 @@ class PieChartWidget(QWidget):
         self.ax.set_facecolor('#1e1e1e')
 
         if not self.data:
-            self.ax.text(0.5, 0.5, "No data", color='white', ha='center', va='center', fontsize=12)
+            self.ax.text(0.5, 0.5, tr('apps.no_data'), color='white', ha='center', va='center', fontsize=12)
             self.ax.axis('off')
             self.canvas.draw_idle()
             return

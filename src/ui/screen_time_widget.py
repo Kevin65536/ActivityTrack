@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QColor, QPainter, QPen, QBrush
 from PySide6.QtCharts import QChart, QChartView, QPieSeries
 import datetime
+from ..i18n import tr
 
 
 def format_duration(seconds):
@@ -41,16 +42,10 @@ class TimeRangeSelector(QWidget):
         layout.setSpacing(5)
         
         self.buttons = {}
-        ranges = [
-            ('today', 'Today'),
-            ('week', 'Week'),
-            ('month', 'Month'),
-            ('year', 'Year'),
-            ('all', 'All Time')
-        ]
+        self.range_keys = ['today', 'week', 'month', 'year', 'all']
         
-        for key, label in ranges:
-            btn = QPushButton(label)
+        for key in self.range_keys:
+            btn = QPushButton(tr(f'time.{key}'))
             btn.setCheckable(True)
             btn.setMinimumWidth(80)
             btn.clicked.connect(lambda checked, k=key: self.on_range_selected(k))
@@ -78,6 +73,11 @@ class TimeRangeSelector(QWidget):
                 font-weight: bold;
             }
         """)
+    
+    def retranslate_ui(self):
+        """Update button text for current language."""
+        for key in self.range_keys:
+            self.buttons[key].setText(tr(f'time.{key}'))
     
     def on_range_selected(self, key):
         for k, btn in self.buttons.items():
@@ -161,7 +161,11 @@ class AppTimeTable(QWidget):
         
         self.table = QTableWidget()
         self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Application", "Time", "Percentage"])
+        self.table.setHorizontalHeaderLabels([
+            tr('screen_time.header.application'), 
+            tr('screen_time.header.time'), 
+            tr('screen_time.header.percentage')
+        ])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -244,7 +248,7 @@ class AppTimePieChart(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         
         self.chart = QChart()
-        self.chart.setTitle("App Distribution")
+        self.chart.setTitle(tr('screen_time.app_distribution'))
         self.chart.setTitleFont(QFont("Arial", 14, QFont.Bold))
         self.chart.setTitleBrush(QBrush(QColor("#ffffff")))
         self.chart.setBackgroundBrush(QBrush(QColor("#2b2b2b")))
@@ -296,7 +300,7 @@ class AppTimePieChart(QWidget):
             slice.setLabelVisible(False)
         
         if others_seconds > 0:
-            slice = series.append("Others", others_seconds)
+            slice = series.append(tr('screen_time.others'), others_seconds)
             slice.setColor(QColor("#666666"))
             slice.setLabelVisible(False)
         
@@ -320,10 +324,10 @@ class ScreenTimeWidget(QWidget):
         # Header with title and time selector
         header = QHBoxLayout()
         
-        title = QLabel("Screen Time")
-        title.setFont(QFont("Arial", 28, QFont.Bold))
-        title.setStyleSheet("color: white;")
-        header.addWidget(title)
+        self.title_label = QLabel(tr('screen_time.title'))
+        self.title_label.setFont(QFont("Arial", 28, QFont.Bold))
+        self.title_label.setStyleSheet("color: white;")
+        header.addWidget(self.title_label)
         
         header.addStretch()
         
@@ -337,13 +341,13 @@ class ScreenTimeWidget(QWidget):
         cards_layout = QHBoxLayout()
         cards_layout.setSpacing(20)
         
-        self.total_time_card = ScreenTimeCard("Total Screen Time")
+        self.total_time_card = ScreenTimeCard(tr('screen_time.total'))
         cards_layout.addWidget(self.total_time_card)
         
-        self.avg_time_card = ScreenTimeCard("Daily Average")
+        self.avg_time_card = ScreenTimeCard(tr('screen_time.daily_avg'))
         cards_layout.addWidget(self.avg_time_card)
         
-        self.top_app_card = ScreenTimeCard("Most Used App", is_text_card=True)
+        self.top_app_card = ScreenTimeCard(tr('screen_time.most_used'), is_text_card=True)
         cards_layout.addWidget(self.top_app_card)
         
         layout.addLayout(cards_layout)
@@ -423,7 +427,7 @@ class ScreenTimeWidget(QWidget):
                 top_display = top_app_name[:-4] if top_app_name.lower().endswith('.exe') else top_app_name
             self.top_app_card.update_text(top_display)
         else:
-            self.top_app_card.update_text("No data")
+            self.top_app_card.update_text(tr('screen_time.no_data'))
         
         # Update table and pie chart
         self.app_table.update_data(app_data, total_seconds)
