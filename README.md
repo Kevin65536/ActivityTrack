@@ -1,6 +1,6 @@
-# KMTracker (Input Tracker)
+# ActivityTrack
 
-A privacy-focused, lightweight input tracking tool for Windows. Inspired by WhatPulse, KMTracker allows you to monitor your keyboard and mouse usage, visualize heatmaps, and track application-specific statistics locally on your machine.
+A privacy-focused, lightweight input tracking tool for Windows. Inspired by WhatPulse, ActivityTrack allows you to monitor your keyboard and mouse usage, visualize heatmaps, and track application-specific statistics locally on your machine.
 
 ## Features
 
@@ -13,6 +13,10 @@ A privacy-focused, lightweight input tracking tool for Windows. Inspired by What
 - **History & Trends**: View daily, weekly, and monthly storage trends with interactive charts.
 - **Application Statistics**: See which applications you use the most, including per-app keystrokes, clicks, and scroll data.
 - **Privacy First**: All data is stored locally in a SQLite database (`tracker.db`). No data is ever sent to the cloud.
+
+## Releases
+
+Pre-compiled Windows executables are available in the [Releases](https://github.com/Kevin65536/ActivityTrack/releases) section.
 
 ## Requirements
 
@@ -30,7 +34,7 @@ A privacy-focused, lightweight input tracking tool for Windows. Inspired by What
 ## Installation
 
 1.  Clone the repository or download the source code.
-2.  Open a terminal in the `InputTracker` directory.
+2.  Open a terminal in the `ActivityTrack` directory.
 3.  Create a virtual environment (optional but recommended):
     ```powershell
     python -m venv venv

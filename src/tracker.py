@@ -59,7 +59,7 @@ HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, LPARAM)
 user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, LPARAM]
 user32.CallNextHookEx.restype = LRESULT
 
-class InputTracker:
+class ActivityTrack:
     def __init__(self, db_path="tracker.db"):
         self.db = Database(db_path)
         self.running = False

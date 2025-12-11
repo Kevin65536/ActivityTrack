@@ -127,7 +127,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.tracker = tracker
         self.config = config or Config()
-        self.setWindowTitle("Input Tracker")
+        self.setWindowTitle("ActivityTrack")
         self.resize(900, 650)
         
         # Dark Theme

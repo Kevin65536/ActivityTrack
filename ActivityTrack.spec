@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for InputTracker
-Build command: pyinstaller InputTracker.spec
+PyInstaller spec file for ActivityTrack
+Build command: pyinstaller ActivityTrack.spec
 """
 import os
 
@@ -72,7 +72,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='InputTracker',
+    name='ActivityTrack',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -94,5 +94,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='InputTracker',
+    name='ActivityTrack',
 )

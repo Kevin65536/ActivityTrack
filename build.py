@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Build script for InputTracker
+Build script for ActivityTrack
 Automates the PyInstaller build process
 """
 
@@ -53,10 +53,10 @@ def check_requirements():
         return False
     
     # Check spec file
-    if not Path('InputTracker.spec').exists():
-        print("✗ InputTracker.spec not found")
+    if not Path('ActivityTrack.spec').exists():
+        print("✗ ActivityTrack.spec not found")
         return False
-    print("✓ InputTracker.spec found")
+    print("✓ ActivityTrack.spec found")
     
     return True
 
@@ -76,7 +76,7 @@ def run_pyinstaller():
     """Run PyInstaller build"""
     print_step("Running PyInstaller")
     
-    cmd = ['pyinstaller', 'InputTracker.spec', '--clean']
+    cmd = ['pyinstaller', 'ActivityTrack.spec', '--clean']
     
     print(f"Command: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=False)
@@ -92,7 +92,7 @@ def verify_build():
     """Verify the build output"""
     print_step("Verifying build output")
     
-    exe_path = Path('dist/InputTracker/InputTracker.exe')
+    exe_path = Path('dist/ActivityTrack/ActivityTrack.exe')
     
     if not exe_path.exists():
         print(f"✗ Executable not found: {exe_path}")
@@ -105,7 +105,7 @@ def verify_build():
     print(f"  Size: {size_mb:.1f} MB")
     
     # Check for critical files
-    dist_dir = Path('dist/InputTracker')
+    dist_dir = Path('dist/ActivityTrack')
     critical_files = ['config.json']
     
     for file_name in critical_files:
@@ -123,8 +123,8 @@ def create_portable_zip():
     
     import zipfile
     
-    dist_dir = Path('dist/InputTracker')
-    zip_path = Path('dist/InputTracker-Portable.zip')
+    dist_dir = Path('dist/ActivityTrack')
+    zip_path = Path('dist/ActivityTrack-Portable.zip')
     
     if zip_path.exists():
         zip_path.unlink()
@@ -147,18 +147,18 @@ def print_summary():
     print_step("Build Summary")
     
     print("Build artifacts:")
-    print(f"  Executable: dist/InputTracker/InputTracker.exe")
-    print(f"  Portable:   dist/InputTracker-Portable.zip")
+    print(f"  Executable: dist/ActivityTrack/ActivityTrack.exe")
+    print(f"  Portable:   dist/ActivityTrack-Portable.zip")
     
     print("\nNext steps:")
-    print("  1. Test the executable in dist/InputTracker/")
+    print("  1. Test the executable in dist/ActivityTrack/")
     print("  2. Test on a clean Windows VM (no Python)")
     print("  3. Create installer with Inno Setup (optional)")
     print("  4. Create GitHub Release and upload artifacts")
 
 def main():
     """Main build process"""
-    print_step("InputTracker Build Script")
+    print_step("ActivityTrack Build Script")
     
     # Check requirements
     if not check_requirements():

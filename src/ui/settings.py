@@ -1,5 +1,5 @@
 """
-Settings page UI for InputTracker.
+Settings page UI for ActivityTrack.
 Provides controls for autostart, data retention, theme selection, etc.
 """
 

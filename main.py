@@ -7,7 +7,7 @@ import ctypes
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import QTimer
-from src.tracker import InputTracker
+from src.tracker import ActivityTrack
 from src.ui.main_window import MainWindow
 from src.ui.tray_icon import TrayIcon
 from src.config import Config
@@ -54,7 +54,7 @@ def main():
 
     # Set Windows AppUserModelID so the taskbar uses our icon instead of the default python icon
     try:
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("InputTracker")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ActivityTrack")
     except Exception:
         pass
     
@@ -68,9 +68,9 @@ def main():
     skip_tracker = os.environ.get("SKIP_TRACKER", "0") == "1"
     if skip_tracker:
         print("[WARN] SKIP_TRACKER=1 -> tracker is DISABLED for diagnostics")
-        tracker = InputTracker()
+        tracker = ActivityTrack()
     else:
-        tracker = InputTracker()
+        tracker = ActivityTrack()
         tracker.start()
     
     # Initialize config

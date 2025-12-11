@@ -1,5 +1,5 @@
 """
-Configuration management for InputTracker.
+Configuration management for ActivityTrack.
 Handles persistent settings like autostart, data retention, and theme preferences.
 """
 
@@ -21,7 +21,7 @@ CONFIG_FILE = 'config.json'
 
 # Registry key for Windows autostart
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-APP_NAME = "InputTracker"
+APP_NAME = "ActivityTrack"
 
 
 class Config:

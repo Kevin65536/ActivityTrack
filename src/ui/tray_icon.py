@@ -14,7 +14,7 @@ class TrayIcon(QSystemTrayIcon):
         # Load icon from file, fallback to programmatic icon
         self.setIcon(self._load_icon())
         self.setVisible(True)
-        self.setToolTip("InputTracker")
+        self.setToolTip("ActivityTrack")
         
         # Create menu
         self.menu = QMenu()
