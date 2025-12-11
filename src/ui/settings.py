@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QSpinBox, QPushButton, QGroupBox,
     QFormLayout, QMessageBox, QScrollArea, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont, QColor, QPainter, QPen
 
 from ..config import Config, HEATMAP_THEMES, get_theme_color
@@ -112,6 +112,17 @@ class SettingsWidget(QWidget):
         self.autostart_check.setStyleSheet(self.get_checkbox_style())
         self.autostart_check.stateChanged.connect(self.on_autostart_changed)
         general_layout.addWidget(self.autostart_check)
+        
+        # Autostart hint label (shown only in dev mode)
+        self.autostart_hint = QLabel("(Only available in packaged .exe version)")
+        self.autostart_hint.setStyleSheet("color: #888888; font-size: 12px; margin-left: 30px;")
+        self.autostart_hint.setVisible(not self.config.is_frozen())
+        general_layout.addWidget(self.autostart_hint)
+        
+        # Disable autostart checkbox in dev mode
+        if not self.config.is_frozen():
+            self.autostart_check.setEnabled(False)
+            self.autostart_check.setToolTip("Autostart is only available when running as a packaged executable (.exe)")
         
         # Minimize to tray checkbox
         self.minimize_tray_check = QCheckBox("Minimize to system tray instead of closing")
@@ -390,12 +401,32 @@ class SettingsWidget(QWidget):
     
     def on_autostart_changed(self, state):
         """Handle autostart checkbox change."""
-        self.config.autostart = (state == Qt.Checked)
+        # Note: In PySide6, stateChanged sends int (0, 1, 2), not Qt.CheckState enum
+        # Qt.Checked.value == 2, Qt.Unchecked.value == 0
+        enabled = (state == Qt.Checked.value)
+        
+        # Set the value - this returns (success, error_message)
+        result = self.config.__class__.autostart.fset(self.config, enabled)
+        
+        if result and not result[0]:
+            # Registry update failed - show error and revert checkbox
+            QMessageBox.warning(
+                self,
+                "Autostart Error",
+                f"Failed to update Windows startup settings:\n\n{result[1]}\n\n"
+                "The setting has been reverted."
+            )
+            # Revert checkbox to actual state
+            self.autostart_check.blockSignals(True)
+            self.autostart_check.setChecked(self.config.autostart)
+            self.autostart_check.blockSignals(False)
+        
         self.settings_changed.emit()
     
     def on_minimize_tray_changed(self, state):
         """Handle minimize to tray checkbox change."""
-        self.config.minimize_to_tray = (state == Qt.Checked)
+        # Note: In PySide6, stateChanged sends int (0, 1, 2), not Qt.CheckState enum
+        self.config.minimize_to_tray = (state == Qt.Checked.value)
         self.settings_changed.emit()
     
     def on_retention_changed(self, value):

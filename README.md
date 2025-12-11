@@ -38,7 +38,7 @@ A privacy-focused, lightweight input tracking tool for Windows. Inspired by What
     ```
 4.  Install dependencies:
     ```powershell
-    pip install PySide6 pywin32 psutil numpy scipy matplotlib
+    pip install -r requirements.txt
     ```
 
 ## Usage

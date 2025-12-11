@@ -76,6 +76,10 @@ def main():
     # Initialize config
     config = Config()
     
+    # Sync autostart state between config file and registry
+    # This ensures UI reflects the actual registry state
+    config.sync_autostart_state()
+    
     # Initialize UI
     window = MainWindow(tracker, config)
     if not app_icon.isNull():

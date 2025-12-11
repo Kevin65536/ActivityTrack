@@ -13,3 +13,5 @@ src/tracker_error.log
 # build files
 build/
 dist/
+
+IMPLEMENTATION_PLAN.md

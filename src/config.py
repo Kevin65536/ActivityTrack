@@ -82,9 +82,23 @@ class Config:
     
     @autostart.setter
     def autostart(self, value):
+        """Set autostart value and update registry.
+        
+        Returns the result of registry update as (success, error_message).
+        The result is stored in self._last_autostart_result for UI to check.
+        """
         self._config['autostart'] = value
         self.save()  # Save config first
-        self._update_autostart_registry(value)  # Then update registry
+        result = self._update_autostart_registry(value)  # Then update registry
+        self._last_autostart_result = result
+        
+        # If registry update failed, revert config to match actual state
+        if not result[0]:
+            actual_state = self.is_autostart_enabled()
+            self._config['autostart'] = actual_state
+            self.save()
+        
+        return result
     
     @property
     def data_retention_days(self):
@@ -122,28 +136,42 @@ class Config:
         self._config['show_notifications'] = value
         self.save()
     
+    @staticmethod
+    def is_frozen():
+        """Check if running as a compiled executable (PyInstaller bundle)."""
+        return getattr(sys, 'frozen', False)
+    
     def _get_executable_path(self):
-        """Get the path to the main executable/script."""
-        if getattr(sys, 'frozen', False):
+        """Get the path to the main executable.
+        
+        Returns:
+            str or None: Path to executable if frozen, None if running as script.
+        """
+        if self.is_frozen():
             # Running as compiled executable
             return sys.executable
         else:
-            # Running as script - use pythonw to avoid console window
-            python_exe = sys.executable
-            # Try to use pythonw if available (no console window)
-            pythonw = python_exe.replace('python.exe', 'pythonw.exe')
-            if os.path.exists(pythonw):
-                python_exe = pythonw
-            
-            # Get the main.py path
-            main_script = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                'main.py'
-            )
-            return f'"{python_exe}" "{main_script}"'
+            # Running as script - autostart not supported
+            return None
     
     def _update_autostart_registry(self, enable):
-        """Update Windows registry for autostart."""
+        """Update Windows registry for autostart.
+        
+        Only works when running as a compiled executable (PyInstaller bundle).
+        
+        Returns:
+            tuple: (success: bool, error_message: str or None)
+        """
+        # Only allow autostart for packaged executable
+        if not self.is_frozen():
+            if enable:
+                error_msg = "Autostart is only available in the packaged version (.exe). Please build the application first."
+                print(f"Warning: {error_msg}")
+                return (False, error_msg)
+            else:
+                # Allow disabling even in dev mode (just remove any existing entry)
+                pass
+        
         try:
             key = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
@@ -154,6 +182,9 @@ class Config:
             
             if enable:
                 exe_path = self._get_executable_path()
+                if exe_path is None:
+                    winreg.CloseKey(key)
+                    return (False, "Cannot determine executable path.")
                 winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, exe_path)
             else:
                 try:
@@ -162,10 +193,15 @@ class Config:
                     pass  # Key doesn't exist, nothing to delete
             
             winreg.CloseKey(key)
-            return True
+            return (True, None)
+        except PermissionError as e:
+            error_msg = f"Permission denied when updating autostart registry: {e}"
+            print(f"Warning: {error_msg}")
+            return (False, error_msg)
         except Exception as e:
-            print(f"Warning: Could not update autostart registry: {e}")
-            return False
+            error_msg = f"Could not update autostart registry: {e}"
+            print(f"Warning: {error_msg}")
+            return (False, error_msg)
     
     def is_autostart_enabled(self):
         """Check if autostart is currently enabled in registry."""
