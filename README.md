@@ -2,7 +2,7 @@
 
 A privacy-focused, lightweight input tracking tool for Windows. Inspired by WhatPulse, ActivityTrack allows you to monitor your keyboard and mouse usage, visualize heatmaps, and track application-specific statistics locally on your machine.
 
-![Screen Time Tab](screenshots/Screentime.png)
+![Screen Time Tab](screenshots/ScreenTime.png)
 
 <details>
 <summary>📸 <b>View more Screenshots</b> (click to expand)</summary>
