@@ -63,196 +63,39 @@ class SettingsWidget(QWidget):
     
     def setup_ui(self):
         """Setup the settings UI."""
-        # Main layout with scroll area for many settings
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(30, 30, 30, 30)
-        main_layout.setSpacing(20)
-        
-        # Title
-        title = QLabel("Settings")
-        title.setFont(QFont("Arial", 28, QFont.Bold))
-        title.setStyleSheet("color: white;")
-        main_layout.addWidget(title)
-        
-        # Scroll area for settings groups
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("""
-            QScrollArea {
-                border: none;
+        # Force dark theme for ALL child widgets to prevent system theme interference
+        self.setStyleSheet("""
+            QWidget {
+                background-color: #1e1e1e;
+                color: #ffffff;
+            }
+            QLabel {
                 background-color: transparent;
+                color: #ffffff;
             }
-            QScrollBar:vertical {
-                background-color: #2b2b2b;
-                width: 12px;
-                border-radius: 6px;
-            }
-            QScrollBar::handle:vertical {
-                background-color: #4a4a4a;
-                border-radius: 6px;
-                min-height: 30px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background-color: #5a5a5a;
-            }
-        """)
-        
-        scroll_content = QWidget()
-        scroll_layout = QVBoxLayout(scroll_content)
-        scroll_layout.setSpacing(20)
-        scroll_layout.setContentsMargins(0, 0, 10, 0)
-        
-        # General Settings Group
-        general_group = self.create_group("General")
-        general_layout = QVBoxLayout()
-        general_layout.setSpacing(15)
-        
-        # Autostart checkbox
-        self.autostart_check = QCheckBox("Start with Windows")
-        self.autostart_check.setStyleSheet(self.get_checkbox_style())
-        self.autostart_check.stateChanged.connect(self.on_autostart_changed)
-        general_layout.addWidget(self.autostart_check)
-        
-        # Autostart hint label (shown only in dev mode)
-        self.autostart_hint = QLabel("(Only available in packaged .exe version)")
-        self.autostart_hint.setStyleSheet("color: #888888; font-size: 12px; margin-left: 30px;")
-        self.autostart_hint.setVisible(not self.config.is_frozen())
-        general_layout.addWidget(self.autostart_hint)
-        
-        # Disable autostart checkbox in dev mode
-        if not self.config.is_frozen():
-            self.autostart_check.setEnabled(False)
-            self.autostart_check.setToolTip("Autostart is only available when running as a packaged executable (.exe)")
-        
-        # Minimize to tray checkbox
-        self.minimize_tray_check = QCheckBox("Minimize to system tray instead of closing")
-        self.minimize_tray_check.setStyleSheet(self.get_checkbox_style())
-        self.minimize_tray_check.stateChanged.connect(self.on_minimize_tray_changed)
-        general_layout.addWidget(self.minimize_tray_check)
-        
-        general_group.setLayout(general_layout)
-        scroll_layout.addWidget(general_group)
-        
-        # Data Management Group
-        data_group = self.create_group("Data Management")
-        data_layout = QVBoxLayout()
-        data_layout.setSpacing(15)
-        
-        # Data retention setting
-        retention_layout = QHBoxLayout()
-        retention_label = QLabel("Keep data for:")
-        retention_label.setStyleSheet("color: #ffffff; font-size: 14px;")
-        retention_layout.addWidget(retention_label)
-        
-        self.retention_spin = QSpinBox()
-        self.retention_spin.setRange(-1, 3650)  # -1 = forever, up to 10 years
-        self.retention_spin.setSpecialValueText("Forever")
-        self.retention_spin.setSuffix(" days")
-        self.retention_spin.setStyleSheet(self.get_spinbox_style())
-        self.retention_spin.setFixedWidth(120)
-        self.retention_spin.valueChanged.connect(self.on_retention_changed)
-        retention_layout.addWidget(self.retention_spin)
-        
-        retention_layout.addStretch()
-        data_layout.addLayout(retention_layout)
-        
-        # Data retention hint
-        retention_hint = QLabel("Set to -1 or 'Forever' to keep all data indefinitely.")
-        retention_hint.setStyleSheet("color: #888888; font-size: 12px;")
-        data_layout.addWidget(retention_hint)
-        
-        # Separator
-        data_layout.addSpacing(10)
-        
-        # Clear data button
-        clear_layout = QHBoxLayout()
-        clear_label = QLabel("Clear all tracking data:")
-        clear_label.setStyleSheet("color: #ffffff; font-size: 14px;")
-        clear_layout.addWidget(clear_label)
-        
-        self.clear_data_btn = QPushButton("Clear Data")
-        self.clear_data_btn.setStyleSheet(self.get_danger_button_style())
-        self.clear_data_btn.setFixedWidth(120)
-        self.clear_data_btn.clicked.connect(self.on_clear_data)
-        clear_layout.addWidget(self.clear_data_btn)
-        
-        clear_layout.addStretch()
-        data_layout.addLayout(clear_layout)
-        
-        data_group.setLayout(data_layout)
-        scroll_layout.addWidget(data_group)
-        
-        # Appearance Group
-        appearance_group = self.create_group("Appearance")
-        appearance_layout = QVBoxLayout()
-        appearance_layout.setSpacing(15)
-        
-        # Heatmap theme selector
-        theme_layout = QHBoxLayout()
-        theme_label = QLabel("Heatmap color theme:")
-        theme_label.setStyleSheet("color: #ffffff; font-size: 14px;")
-        theme_layout.addWidget(theme_label)
-        
-        self.theme_combo = QComboBox()
-        self.theme_combo.setStyleSheet(self.get_combobox_style())
-        self.theme_combo.setMinimumWidth(280)
-        
-        # Add themes to combo
-        for theme_key, theme_data in HEATMAP_THEMES.items():
-            self.theme_combo.addItem(theme_data['name'], theme_key)
-        
-        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
-        theme_layout.addWidget(self.theme_combo)
-        theme_layout.addStretch()
-        
-        appearance_layout.addLayout(theme_layout)
-        
-        # Theme preview
-        preview_layout = QHBoxLayout()
-        preview_label = QLabel("Preview:")
-        preview_label.setStyleSheet("color: #aaaaaa; font-size: 13px;")
-        preview_layout.addWidget(preview_label)
-        
-        self.theme_preview = ColorPreviewWidget()
-        preview_layout.addWidget(self.theme_preview)
-        preview_layout.addStretch()
-        
-        appearance_layout.addLayout(preview_layout)
-        
-        appearance_group.setLayout(appearance_layout)
-        scroll_layout.addWidget(appearance_group)
-        
-        # Add stretch at the end
-        scroll_layout.addStretch()
-        
-        scroll.setWidget(scroll_content)
-        main_layout.addWidget(scroll)
-    
-    def create_group(self, title):
-        """Create a styled group box."""
-        group = QGroupBox(title)
-        group.setStyleSheet("""
             QGroupBox {
                 background-color: #2b2b2b;
                 border: 1px solid #3d3d3d;
                 border-radius: 8px;
-                margin-top: 15px;
+                margin-top: 12px;
                 padding: 15px;
+                padding-top: 12px;
                 font-size: 15px;
                 font-weight: bold;
                 color: #00e676;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 15px;
-                padding: 0 5px;
+                subcontrol-position: top left;
+                left: 10px;
+                top: 0px;
+                padding: 2px 8px;
+                background-color: #2b2b2b;
+                border: 1px solid #3d3d3d;
+                border-radius: 4px;
             }
-        """)
-        return group
-    
-    def get_checkbox_style(self):
-        return """
             QCheckBox {
+                background-color: transparent;
                 color: #ffffff;
                 font-size: 14px;
                 spacing: 10px;
@@ -274,12 +117,31 @@ class SettingsWidget(QWidget):
             QCheckBox::indicator:checked:hover {
                 background-color: #00c853;
             }
-        """
-    
-    def get_spinbox_style(self):
-        return """
-            QSpinBox {
+            QCheckBox:disabled {
+                color: #666666;
+            }
+            QScrollArea {
+                border: none;
+                background-color: #1e1e1e;
+            }
+            QScrollBar:vertical {
                 background-color: #2b2b2b;
+                width: 12px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #4a4a4a;
+                border-radius: 6px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #5a5a5a;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QSpinBox {
+                background-color: #3d3d3d;
                 color: #ffffff;
                 border: 1px solid #4a4a4a;
                 border-radius: 5px;
@@ -290,12 +152,12 @@ class SettingsWidget(QWidget):
                 border-color: #00e676;
             }
             QSpinBox::up-button, QSpinBox::down-button {
-                background-color: #3d3d3d;
+                background-color: #4a4a4a;
                 border: none;
                 width: 20px;
             }
             QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-                background-color: #4a4a4a;
+                background-color: #5a5a5a;
             }
             QSpinBox::up-arrow {
                 image: none;
@@ -309,12 +171,8 @@ class SettingsWidget(QWidget):
                 border-right: 4px solid transparent;
                 border-top: 5px solid #aaaaaa;
             }
-        """
-    
-    def get_combobox_style(self):
-        return """
             QComboBox {
-                background-color: #2b2b2b;
+                background-color: #3d3d3d;
                 color: #ffffff;
                 border: 1px solid #4a4a4a;
                 border-radius: 5px;
@@ -346,15 +204,12 @@ class SettingsWidget(QWidget):
             }
             QComboBox QAbstractItemView::item {
                 padding: 8px 12px;
+                background-color: #2b2b2b;
             }
             QComboBox QAbstractItemView::item:hover {
                 background-color: #3d3d3d;
             }
-        """
-    
-    def get_danger_button_style(self):
-        return """
-            QPushButton {
+            QPushButton#clearDataBtn {
                 background-color: #c62828;
                 color: #ffffff;
                 border: none;
@@ -363,13 +218,160 @@ class SettingsWidget(QWidget):
                 font-size: 13px;
                 font-weight: bold;
             }
-            QPushButton:hover {
+            QPushButton#clearDataBtn:hover {
                 background-color: #e53935;
             }
-            QPushButton:pressed {
+            QPushButton#clearDataBtn:pressed {
                 background-color: #b71c1c;
             }
-        """
+        """)
+        
+        # Main layout with scroll area for many settings
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(30, 30, 30, 30)
+        main_layout.setSpacing(20)
+        
+        # Title
+        title = QLabel("Settings")
+        title.setFont(QFont("Arial", 28, QFont.Bold))
+        title.setStyleSheet("color: white;")
+        main_layout.addWidget(title)
+        
+        # Scroll area for settings groups
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_layout.setSpacing(20)
+        scroll_layout.setContentsMargins(0, 0, 10, 0)
+        
+        # General Settings Group
+        general_group = self.create_group("General")
+        general_layout = QVBoxLayout()
+        general_layout.setSpacing(15)
+        
+        # Autostart checkbox
+        self.autostart_check = QCheckBox("Start with Windows")
+        self.autostart_check.stateChanged.connect(self.on_autostart_changed)
+        general_layout.addWidget(self.autostart_check)
+        
+        # Autostart hint label (shown only in dev mode)
+        self.autostart_hint = QLabel("(Only available in packaged .exe version)")
+        self.autostart_hint.setStyleSheet("color: #888888; font-size: 12px; margin-left: 30px; background-color: transparent;")
+        self.autostart_hint.setVisible(not self.config.is_frozen())
+        general_layout.addWidget(self.autostart_hint)
+        
+        # Disable autostart checkbox in dev mode
+        if not self.config.is_frozen():
+            self.autostart_check.setEnabled(False)
+            self.autostart_check.setToolTip("Autostart is only available when running as a packaged executable (.exe)")
+        
+        # Minimize to tray checkbox
+        self.minimize_tray_check = QCheckBox("Minimize to system tray instead of closing")
+        self.minimize_tray_check.stateChanged.connect(self.on_minimize_tray_changed)
+        general_layout.addWidget(self.minimize_tray_check)
+        
+        general_group.setLayout(general_layout)
+        scroll_layout.addWidget(general_group)
+        
+        # Data Management Group
+        data_group = self.create_group("Data Management")
+        data_layout = QVBoxLayout()
+        data_layout.setSpacing(15)
+        
+        # Data retention setting
+        retention_layout = QHBoxLayout()
+        retention_label = QLabel("Keep data for:")
+        retention_label.setStyleSheet("color: #ffffff; font-size: 14px; background-color: transparent;")
+        retention_layout.addWidget(retention_label)
+        
+        self.retention_spin = QSpinBox()
+        self.retention_spin.setRange(-1, 3650)  # -1 = forever, up to 10 years
+        self.retention_spin.setSpecialValueText("Forever")
+        self.retention_spin.setSuffix(" days")
+        self.retention_spin.setFixedWidth(120)
+        self.retention_spin.valueChanged.connect(self.on_retention_changed)
+        retention_layout.addWidget(self.retention_spin)
+        
+        retention_layout.addStretch()
+        data_layout.addLayout(retention_layout)
+        
+        # Data retention hint
+        retention_hint = QLabel("Set to -1 or 'Forever' to keep all data indefinitely.")
+        retention_hint.setStyleSheet("color: #888888; font-size: 12px; background-color: transparent;")
+        data_layout.addWidget(retention_hint)
+        
+        # Separator
+        data_layout.addSpacing(10)
+        
+        # Clear data button
+        clear_layout = QHBoxLayout()
+        clear_label = QLabel("Clear all tracking data:")
+        clear_label.setStyleSheet("color: #ffffff; font-size: 14px; background-color: transparent;")
+        clear_layout.addWidget(clear_label)
+        
+        self.clear_data_btn = QPushButton("Clear Data")
+        self.clear_data_btn.setObjectName("clearDataBtn")
+        self.clear_data_btn.setFixedWidth(120)
+        self.clear_data_btn.clicked.connect(self.on_clear_data)
+        clear_layout.addWidget(self.clear_data_btn)
+        
+        clear_layout.addStretch()
+        data_layout.addLayout(clear_layout)
+        
+        data_group.setLayout(data_layout)
+        scroll_layout.addWidget(data_group)
+        
+        # Appearance Group
+        appearance_group = self.create_group("Appearance")
+        appearance_layout = QVBoxLayout()
+        appearance_layout.setSpacing(15)
+        
+        # Heatmap theme selector
+        theme_layout = QHBoxLayout()
+        theme_label = QLabel("Heatmap color theme:")
+        theme_label.setStyleSheet("color: #ffffff; font-size: 14px; background-color: transparent;")
+        theme_layout.addWidget(theme_label)
+        
+        self.theme_combo = QComboBox()
+        self.theme_combo.setMinimumWidth(280)
+        
+        # Add themes to combo
+        for theme_key, theme_data in HEATMAP_THEMES.items():
+            self.theme_combo.addItem(theme_data['name'], theme_key)
+        
+        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
+        theme_layout.addWidget(self.theme_combo)
+        theme_layout.addStretch()
+        
+        appearance_layout.addLayout(theme_layout)
+        
+        # Theme preview
+        preview_layout = QHBoxLayout()
+        preview_label = QLabel("Preview:")
+        preview_label.setStyleSheet("color: #aaaaaa; font-size: 13px; background-color: transparent;")
+        preview_layout.addWidget(preview_label)
+        
+        self.theme_preview = ColorPreviewWidget()
+        preview_layout.addWidget(self.theme_preview)
+        preview_layout.addStretch()
+        
+        appearance_layout.addLayout(preview_layout)
+        
+        appearance_group.setLayout(appearance_layout)
+        scroll_layout.addWidget(appearance_group)
+        
+        # Add stretch at the end
+        scroll_layout.addStretch()
+        
+        scroll.setWidget(scroll_content)
+        main_layout.addWidget(scroll)
+    
+    def create_group(self, title):
+        """Create a styled group box."""
+        group = QGroupBox(title)
+        return group
     
     def load_settings(self):
         """Load current settings into UI controls."""
