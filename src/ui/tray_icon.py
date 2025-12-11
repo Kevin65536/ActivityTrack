@@ -85,5 +85,5 @@ class TrayIcon(QSystemTrayIcon):
         return QIcon(pixmap)
 
     def on_activated(self, reason):
-        if reason == QSystemTrayIcon.DoubleClick:
+        if reason == QSystemTrayIcon.Trigger:
             self.show_window_signal.emit()
