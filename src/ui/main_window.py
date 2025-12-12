@@ -187,7 +187,11 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsWidget(self.config, self.tracker.db)
         self.settings_tab.theme_changed.connect(self.on_theme_changed)
         self.settings_tab.language_changed.connect(self.on_language_changed)
+        self.settings_tab.settings_changed.connect(self.on_settings_changed)
         self.tabs.addTab(self.settings_tab, tr('tab.settings'))
+        
+        # Initialize tracker's idle timeout from config
+        self.tracker.set_idle_timeout(self.config.idle_timeout_seconds)
 
         # Hook after all tabs are created
         self.tabs.currentChanged.connect(self.on_tab_changed)
@@ -782,6 +786,11 @@ class MainWindow(QMainWindow):
         # The actual UI text update will happen on next app restart
         # But we can update the window title immediately
         self.setWindowTitle(tr('app.title'))
+    
+    def on_settings_changed(self):
+        """Handle general settings changes."""
+        # Sync idle timeout to tracker
+        self.tracker.set_idle_timeout(self.config.idle_timeout_seconds)
 
     def closeEvent(self, event):
         """Handle window close event based on minimize_to_tray setting."""

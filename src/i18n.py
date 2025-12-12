@@ -98,6 +98,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'screen_time.header.percentage': 'Percentage',
         'screen_time.no_data': 'No data',
         'screen_time.others': 'Others',
+        'screen_time.idle': 'Idle',
+        'screen_time.total_active': 'Active Time',
+        'screen_time.total_idle': 'Idle Time',
         
         # Settings
         'settings.title': 'Settings',
@@ -118,6 +121,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'settings.language_hint': 'Restart required to apply language change.',
         'settings.theme': 'Heatmap color theme:',
         'settings.preview': 'Preview:',
+        'settings.idle_detection': 'Idle Detection',
+        'settings.idle_timeout': 'Idle timeout:',
+        'settings.idle_timeout_hint': 'Time without input before marking as idle. Set to 0 to disable.',
+        'settings.idle_minutes': ' minutes',
+        'settings.idle_disabled': 'Disabled',
         
         # Theme names
         'theme.default': 'Default (Blue → Green → Yellow → Orange)',
@@ -230,6 +238,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'screen_time.header.percentage': '百分比',
         'screen_time.no_data': '暂无数据',
         'screen_time.others': '其他',
+        'screen_time.idle': '空闲',
+        'screen_time.total_active': '活跃时间',
+        'screen_time.total_idle': '空闲时间',
         
         # Settings
         'settings.title': '设置',
@@ -250,6 +261,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'settings.language_hint': '更改语言后需要重启应用。',
         'settings.theme': '热力图配色主题：',
         'settings.preview': '预览：',
+        'settings.idle_detection': '空闲检测',
+        'settings.idle_timeout': '空闲超时：',
+        'settings.idle_timeout_hint': '无输入多长时间后标记为空闲。设为 0 禁用此功能。',
+        'settings.idle_minutes': ' 分钟',
+        'settings.idle_disabled': '已禁用',
         
         # Theme names
         'theme.default': '默认（蓝 → 绿 → 黄 → 橙）',

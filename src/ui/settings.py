@@ -325,6 +325,36 @@ class SettingsWidget(QWidget):
         self.data_group.setLayout(data_layout)
         scroll_layout.addWidget(self.data_group)
         
+        # Idle Detection Group
+        self.idle_group = self.create_group(tr('settings.idle_detection'))
+        idle_layout = QVBoxLayout()
+        idle_layout.setSpacing(15)
+        
+        # Idle timeout setting
+        idle_timeout_layout = QHBoxLayout()
+        self.idle_timeout_label = QLabel(tr('settings.idle_timeout'))
+        self.idle_timeout_label.setStyleSheet("color: #ffffff; font-size: 14px; background-color: transparent;")
+        idle_timeout_layout.addWidget(self.idle_timeout_label)
+        
+        self.idle_timeout_spin = QSpinBox()
+        self.idle_timeout_spin.setRange(0, 60)  # 0 = disabled, up to 60 minutes
+        self.idle_timeout_spin.setSpecialValueText(tr('settings.idle_disabled'))
+        self.idle_timeout_spin.setSuffix(tr('settings.idle_minutes'))
+        self.idle_timeout_spin.setFixedWidth(120)
+        self.idle_timeout_spin.valueChanged.connect(self.on_idle_timeout_changed)
+        idle_timeout_layout.addWidget(self.idle_timeout_spin)
+        
+        idle_timeout_layout.addStretch()
+        idle_layout.addLayout(idle_timeout_layout)
+        
+        # Idle timeout hint
+        self.idle_timeout_hint = QLabel(tr('settings.idle_timeout_hint'))
+        self.idle_timeout_hint.setStyleSheet("color: #888888; font-size: 12px; background-color: transparent;")
+        idle_layout.addWidget(self.idle_timeout_hint)
+        
+        self.idle_group.setLayout(idle_layout)
+        scroll_layout.addWidget(self.idle_group)
+        
         # Appearance Group
         self.appearance_group = self.create_group(tr('settings.appearance'))
         appearance_layout = QVBoxLayout()
@@ -422,6 +452,13 @@ class SettingsWidget(QWidget):
         self.clear_label.setText(tr('settings.clear_data'))
         self.clear_data_btn.setText(tr('settings.clear_data_btn'))
         
+        # Idle detection group
+        self.idle_group.setTitle(tr('settings.idle_detection'))
+        self.idle_timeout_label.setText(tr('settings.idle_timeout'))
+        self.idle_timeout_spin.setSpecialValueText(tr('settings.idle_disabled'))
+        self.idle_timeout_spin.setSuffix(tr('settings.idle_minutes'))
+        self.idle_timeout_hint.setText(tr('settings.idle_timeout_hint'))
+        
         # Appearance group
         self.appearance_group.setTitle(tr('settings.appearance'))
         self.language_label.setText(tr('settings.language'))
@@ -450,11 +487,16 @@ class SettingsWidget(QWidget):
         self.retention_spin.blockSignals(True)
         self.theme_combo.blockSignals(True)
         self.language_combo.blockSignals(True)
+        self.idle_timeout_spin.blockSignals(True)
         
         # Load values from config (trust config file, not registry)
         self.autostart_check.setChecked(self.config.autostart)
         self.minimize_tray_check.setChecked(self.config.minimize_to_tray)
         self.retention_spin.setValue(self.config.data_retention_days)
+        
+        # Load idle timeout (convert seconds to minutes for display)
+        idle_seconds = self.config.idle_timeout_seconds
+        self.idle_timeout_spin.setValue(idle_seconds // 60)
         
         # Set language combo
         current_lang = self.config.language
@@ -478,6 +520,7 @@ class SettingsWidget(QWidget):
         self.retention_spin.blockSignals(False)
         self.theme_combo.blockSignals(False)
         self.language_combo.blockSignals(False)
+        self.idle_timeout_spin.blockSignals(False)
     
     def on_autostart_changed(self, state):
         """Handle autostart checkbox change."""
@@ -511,6 +554,12 @@ class SettingsWidget(QWidget):
     def on_retention_changed(self, value):
         """Handle data retention spinbox change."""
         self.config.data_retention_days = value
+        self.settings_changed.emit()
+    
+    def on_idle_timeout_changed(self, value):
+        """Handle idle timeout spinbox change."""
+        # Convert minutes to seconds for storage
+        self.config.idle_timeout_seconds = value * 60
         self.settings_changed.emit()
     
     def on_language_changed(self, index):

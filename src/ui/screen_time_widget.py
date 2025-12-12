@@ -218,25 +218,34 @@ class AppTimeTable(QWidget):
         self.table.setRowCount(len(app_data))
         
         for row, (app_name, seconds) in enumerate(app_data):
-            # Get friendly name
-            if app_name in self.metadata and self.metadata[app_name].get('friendly_name'):
+            # Get friendly name - special handling for [Idle]
+            if app_name == '[Idle]':
+                display_name = tr('screen_time.idle')
+            elif app_name in self.metadata and self.metadata[app_name].get('friendly_name'):
                 display_name = self.metadata[app_name]['friendly_name']
             else:
                 display_name = app_name[:-4] if app_name.lower().endswith('.exe') else app_name
             
             # App name
             name_item = QTableWidgetItem(display_name)
+            # Style idle row differently
+            if app_name == '[Idle]':
+                name_item.setForeground(QColor('#888888'))
             self.table.setItem(row, 0, name_item)
             
             # Time
             time_item = QTableWidgetItem(format_duration(seconds))
             time_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if app_name == '[Idle]':
+                time_item.setForeground(QColor('#888888'))
             self.table.setItem(row, 1, time_item)
             
             # Percentage
             pct = (seconds / total_seconds * 100) if total_seconds > 0 else 0
             pct_item = QTableWidgetItem(f"{pct:.1f}%")
             pct_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            if app_name == '[Idle]':
+                pct_item.setForeground(QColor('#888888'))
             self.table.setItem(row, 2, pct_item)
 
 
@@ -288,20 +297,26 @@ class AppTimePieChart(QWidget):
         for i, (app_name, seconds) in enumerate(top_apps):
             if seconds <= 0:
                 continue
-                
-            # Get friendly name
-            if app_name in self.metadata and self.metadata[app_name].get('friendly_name'):
-                display_name = self.metadata[app_name]['friendly_name']
-            else:
-                display_name = app_name[:-4] if app_name.lower().endswith('.exe') else app_name
             
-            slice = series.append(display_name, seconds)
-            slice.setColor(QColor(self.colors[i % len(self.colors)]))
+            # Get friendly name - special handling for [Idle]
+            if app_name == '[Idle]':
+                display_name = tr('screen_time.idle')
+                slice = series.append(display_name, seconds)
+                slice.setColor(QColor('#666666'))  # Gray for idle
+            else:
+                if app_name in self.metadata and self.metadata[app_name].get('friendly_name'):
+                    display_name = self.metadata[app_name]['friendly_name']
+                else:
+                    display_name = app_name[:-4] if app_name.lower().endswith('.exe') else app_name
+                
+                slice = series.append(display_name, seconds)
+                slice.setColor(QColor(self.colors[i % len(self.colors)]))
+            
             slice.setLabelVisible(False)
         
         if others_seconds > 0:
             slice = series.append(tr('screen_time.others'), others_seconds)
-            slice.setColor(QColor("#666666"))
+            slice.setColor(QColor("#555555"))
             slice.setLabelVisible(False)
         
         self.chart.addSeries(series)
@@ -344,8 +359,9 @@ class ScreenTimeWidget(QWidget):
         self.total_time_card = ScreenTimeCard(tr('screen_time.total'))
         cards_layout.addWidget(self.total_time_card)
         
-        self.avg_time_card = ScreenTimeCard(tr('screen_time.daily_avg'))
-        cards_layout.addWidget(self.avg_time_card)
+        # This card shows "Active Time" for today, or "Daily Average" for other ranges
+        self.secondary_time_card = ScreenTimeCard(tr('screen_time.total_active'))
+        cards_layout.addWidget(self.secondary_time_card)
         
         self.top_app_card = ScreenTimeCard(tr('screen_time.most_used'), is_text_card=True)
         cards_layout.addWidget(self.top_app_card)
@@ -405,22 +421,39 @@ class ScreenTimeWidget(QWidget):
         else:
             app_data = list(app_data)
         
+        # Separate idle time from active apps
+        idle_seconds = 0
+        active_app_data = []
+        for app_name, seconds in app_data:
+            if app_name == '[Idle]':
+                idle_seconds = seconds
+            else:
+                active_app_data.append((app_name, seconds))
+        
         # Calculate totals
-        total_seconds = sum(s for _, s in app_data)
+        active_seconds = sum(s for _, s in active_app_data)
+        total_seconds = active_seconds + idle_seconds
         
-        # Calculate days for average
-        if start_date and end_date:
-            days = (end_date - start_date).days + 1
-        else:
-            days = 1
-        avg_seconds = total_seconds / days if days > 0 else 0
-        
-        # Update cards
+        # Update cards based on time range
         self.total_time_card.update_value(total_seconds)
-        self.avg_time_card.update_value(avg_seconds)
         
-        if app_data:
-            top_app_name = app_data[0][0]
+        if is_today:
+            # For today: show active time
+            self.secondary_time_card.lbl_title.setText(tr('screen_time.total_active'))
+            self.secondary_time_card.update_value(active_seconds)
+        else:
+            # For week/month/year/all: show daily average
+            self.secondary_time_card.lbl_title.setText(tr('screen_time.daily_avg'))
+            if start_date and end_date:
+                days = (end_date - start_date).days + 1
+            else:
+                days = 1
+            avg_seconds = total_seconds / days if days > 0 else 0
+            self.secondary_time_card.update_value(avg_seconds)
+        
+        # Find top app (excluding idle)
+        if active_app_data:
+            top_app_name = active_app_data[0][0]
             if top_app_name in metadata and metadata[top_app_name].get('friendly_name'):
                 top_display = metadata[top_app_name]['friendly_name']
             else:
@@ -429,6 +462,11 @@ class ScreenTimeWidget(QWidget):
         else:
             self.top_app_card.update_text(tr('screen_time.no_data'))
         
-        # Update table and pie chart
-        self.app_table.update_data(app_data, total_seconds)
-        self.pie_chart.update_data(app_data, total_seconds)
+        # Include idle in display data (at the end)
+        display_data = active_app_data.copy()
+        if idle_seconds > 0:
+            display_data.append(('[Idle]', idle_seconds))
+        
+        # Update table and pie chart with all data including idle
+        self.app_table.update_data(display_data, total_seconds)
+        self.pie_chart.update_data(display_data, total_seconds)

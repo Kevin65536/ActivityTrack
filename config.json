@@ -4,5 +4,6 @@
   "heatmap_theme": "default",
   "minimize_to_tray": true,
   "show_notifications": false,
-  "language": "zh"
+  "language": "zh",
+  "idle_timeout_seconds": 60
 }

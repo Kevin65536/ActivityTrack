@@ -81,6 +81,12 @@ class ActivityTrack:
         self.current_foreground_app = None
         self.foreground_app_start_time = None
         
+        # Idle detection
+        self.last_activity_time = time.time()  # Last user input activity
+        self.idle_timeout = 300  # Default 5 minutes (300 seconds)
+        self.is_idle = False  # Current idle state
+        self.idle_start_time = None  # When idle period started
+        
         self.lock = threading.Lock()
         self.last_mouse_pos = None
         self.cached_app_name = "Unknown"
@@ -94,6 +100,45 @@ class ActivityTrack:
         # Screen metrics for distance calculation
         self._init_screen_metrics()
 
+    def set_idle_timeout(self, seconds):
+        """Set the idle timeout threshold in seconds.
+        
+        Args:
+            seconds: Number of seconds of inactivity before considering user idle.
+                    Set to 0 or negative to disable idle detection.
+        """
+        with self.lock:
+            self.idle_timeout = max(0, seconds)
+    
+    def _update_activity_time(self):
+        """Update last activity time. Called on any user input."""
+        current_time = time.time()
+        with self.lock:
+            self.last_activity_time = current_time
+            
+            # If we were idle and now active, record the idle time
+            if self.is_idle and self.idle_start_time:
+                idle_duration = current_time - self.idle_start_time
+                if idle_duration > 0:
+                    self.foreground_time_buffer['[Idle]'] = self.foreground_time_buffer.get('[Idle]', 0) + idle_duration
+                self.is_idle = False
+                self.idle_start_time = None
+                # Reset foreground tracking to current app
+                self.foreground_app_start_time = current_time
+    
+    def _check_idle_state(self):
+        """Check if user is idle based on last activity time.
+        
+        Returns:
+            bool: True if user is currently idle
+        """
+        if self.idle_timeout <= 0:
+            return False  # Idle detection disabled
+        
+        current_time = time.time()
+        time_since_activity = current_time - self.last_activity_time
+        return time_since_activity >= self.idle_timeout
+    
     def _init_screen_metrics(self):
         """Initialize screen physical dimensions for accurate distance calculation.
         
@@ -166,17 +211,55 @@ class ActivityTrack:
             time.sleep(1)
 
     def _check_foreground_window(self):
-        """Check if foreground window has changed and record time."""
+        """Check if foreground window has changed and record time.
+        
+        Also handles idle detection - if user is idle, time is recorded as '[Idle]'
+        instead of the foreground application.
+        """
         current_app = self.get_active_app_name()
         current_time = time.time()
         
         with self.lock:
+            # Check if user has become idle
+            was_idle = self.is_idle
+            now_idle = self._check_idle_state_unlocked()
+            
             if self.current_foreground_app is None:
                 # First time initialization
                 self.current_foreground_app = current_app
                 self.foreground_app_start_time = current_time
-            elif current_app != self.current_foreground_app:
-                # Window changed, record time for previous app
+                self.is_idle = now_idle
+                if now_idle:
+                    self.idle_start_time = current_time
+            elif now_idle and not was_idle:
+                # User just became idle - record time for current app up to this point
+                if self.foreground_app_start_time:
+                    # Time before idle should go to the app
+                    # Use last_activity_time as the cutoff
+                    active_duration = self.last_activity_time - self.foreground_app_start_time
+                    if active_duration > 0 and self.current_foreground_app != "Unknown":
+                        app = self.current_foreground_app
+                        self.foreground_time_buffer[app] = self.foreground_time_buffer.get(app, 0) + active_duration
+                
+                # Start tracking idle time
+                self.is_idle = True
+                self.idle_start_time = self.last_activity_time
+                self.foreground_app_start_time = None  # Pause app tracking
+                
+            elif not now_idle and was_idle:
+                # User returned from idle - this is handled in _update_activity_time
+                # But just in case, ensure state is consistent
+                self.is_idle = False
+                if self.idle_start_time:
+                    idle_duration = current_time - self.idle_start_time
+                    if idle_duration > 0:
+                        self.foreground_time_buffer['[Idle]'] = self.foreground_time_buffer.get('[Idle]', 0) + idle_duration
+                self.idle_start_time = None
+                self.current_foreground_app = current_app
+                self.foreground_app_start_time = current_time
+                
+            elif not now_idle and current_app != self.current_foreground_app:
+                # Window changed while not idle, record time for previous app
                 if self.foreground_app_start_time:
                     elapsed = current_time - self.foreground_app_start_time
                     if elapsed > 0 and self.current_foreground_app != "Unknown":
@@ -186,12 +269,29 @@ class ActivityTrack:
                 # Start tracking new app
                 self.current_foreground_app = current_app
                 self.foreground_app_start_time = current_time
+            
+            # If idle, we don't update current_foreground_app - idle time is tracked separately
+    
+    def _check_idle_state_unlocked(self):
+        """Check idle state without acquiring lock (for use when lock is already held)."""
+        if self.idle_timeout <= 0:
+            return False
+        current_time = time.time()
+        time_since_activity = current_time - self.last_activity_time
+        return time_since_activity >= self.idle_timeout
 
     def _record_foreground_time(self):
         """Record current foreground app's accumulated time before flush."""
         current_time = time.time()
         with self.lock:
-            if self.current_foreground_app and self.foreground_app_start_time:
+            if self.is_idle and self.idle_start_time:
+                # Record accumulated idle time
+                idle_duration = current_time - self.idle_start_time
+                if idle_duration > 0:
+                    self.foreground_time_buffer['[Idle]'] = self.foreground_time_buffer.get('[Idle]', 0) + idle_duration
+                # Reset idle start time but keep idle state
+                self.idle_start_time = current_time
+            elif self.current_foreground_app and self.foreground_app_start_time:
                 elapsed = current_time - self.foreground_app_start_time
                 if elapsed > 0 and self.current_foreground_app != "Unknown":
                     app = self.current_foreground_app
@@ -202,10 +302,17 @@ class ActivityTrack:
     def get_foreground_time_snapshot(self):
         """Get a thread-safe snapshot of current foreground time buffer."""
         with self.lock:
-            # Include any accumulated time for current foreground app
+            # Include any accumulated time for current foreground app or idle
             buffer_copy = dict(self.foreground_time_buffer)
-            if self.current_foreground_app and self.foreground_app_start_time:
-                elapsed = time.time() - self.foreground_app_start_time
+            current_time = time.time()
+            
+            if self.is_idle and self.idle_start_time:
+                # Currently idle - add accumulated idle time
+                idle_elapsed = current_time - self.idle_start_time
+                if idle_elapsed > 0:
+                    buffer_copy['[Idle]'] = buffer_copy.get('[Idle]', 0) + idle_elapsed
+            elif self.current_foreground_app and self.foreground_app_start_time:
+                elapsed = current_time - self.foreground_app_start_time
                 if elapsed > 0 and self.current_foreground_app != "Unknown":
                     app = self.current_foreground_app
                     buffer_copy[app] = buffer_copy.get(app, 0) + elapsed
@@ -429,6 +536,7 @@ class ActivityTrack:
         user32.UnhookWindowsHookEx(self.mouse_hook)
 
     def on_press(self, vk_code, scan_code):
+        self._update_activity_time()  # Update last activity for idle detection
         with self.lock:
             self.key_buffer += 1
             
@@ -447,6 +555,7 @@ class ActivityTrack:
             self.app_heatmap_buffer[app_name][scan_code] = self.app_heatmap_buffer[app_name].get(scan_code, 0) + 1
 
     def on_move(self, x, y):
+        self._update_activity_time()  # Update last activity for idle detection
         if self.last_mouse_pos:
             # Calculate pixel distance
             dx = x - self.last_mouse_pos[0]
@@ -474,6 +583,7 @@ class ActivityTrack:
         self.last_mouse_pos = (x, y)
 
     def on_click(self, x=0, y=0):
+        self._update_activity_time()  # Update last activity for idle detection
         with self.lock:
             self.click_buffer += 1
             
@@ -495,6 +605,7 @@ class ActivityTrack:
             self.app_mouse_heatmap_buffer[app][(bx, by)] = self.app_mouse_heatmap_buffer[app].get((bx, by), 0) + 1
 
     def on_scroll(self, delta):
+        self._update_activity_time()  # Update last activity for idle detection
         with self.lock:
             self.scroll_buffer += abs(delta) / 120.0
             

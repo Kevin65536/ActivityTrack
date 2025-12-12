@@ -16,6 +16,7 @@ DEFAULT_CONFIG = {
     'minimize_to_tray': True,
     'show_notifications': True,
     'language': 'en',  # 'en' for English, 'zh' for Chinese
+    'idle_timeout_seconds': 300,  # 5 minutes, 0 to disable idle detection
 }
 
 CONFIG_FILE = 'config.json'
@@ -144,6 +145,15 @@ class Config:
     @language.setter
     def language(self, value):
         self._config['language'] = value
+        self.save()
+    
+    @property
+    def idle_timeout_seconds(self):
+        return self._config.get('idle_timeout_seconds', 300)
+    
+    @idle_timeout_seconds.setter
+    def idle_timeout_seconds(self, value):
+        self._config['idle_timeout_seconds'] = max(0, int(value))
         self.save()
     
     @staticmethod
