@@ -10,6 +10,8 @@ class Database:
 
     def _resolve_db_path(self, db_path):
         """Ensure DB path is anchored to the install directory."""
+        if db_path == ":memory:":
+            return db_path
         if os.path.isabs(db_path):
             return db_path
 

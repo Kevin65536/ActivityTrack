@@ -541,6 +541,23 @@ class ScreenTimeWidget(QWidget):
         # Calculate totals
         active_seconds = sum(s for _, s in active_app_data)
         total_seconds = active_seconds + idle_seconds
+
+        # Guard rails: a single day's total cannot exceed the time available.
+        # This also protects the UI from already-polluted DB data.
+        if is_single_day:
+            if is_today:
+                now = datetime.datetime.now()
+                midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                max_total = max(0, int((now - midnight).total_seconds()))
+            else:
+                max_total = 24 * 3600
+
+            if total_seconds > max_total and total_seconds > 0:
+                scale = max_total / total_seconds
+                active_seconds *= scale
+                idle_seconds *= scale
+                total_seconds = max_total
+                active_app_data = [(app, seconds * scale) for app, seconds in active_app_data]
         
         # Update cards based on time range
         self.total_time_card.update_value(total_seconds)

@@ -10,7 +10,9 @@ import win32api
 import win32con
 import psutil
 from .database import Database
+from .screen_time import split_interval_by_local_hour
 import datetime
+from collections import defaultdict
 
 # Ctypes definitions
 user32 = ctypes.windll.user32
@@ -77,7 +79,9 @@ class ActivityTrack:
         self.app_mouse_heatmap_buffer = {}  # {app_name: {(x, y): count}}
         
         # Screen time tracking
-        self.foreground_time_buffer = {}  # {app_name: seconds}
+        # Buffer by (date, hour, app_name) to avoid dumping long spans into a single hour.
+        # Values are float seconds.
+        self.foreground_time_buffer = {}  # {(date, hour, app_name): seconds}
         self.current_foreground_app = None
         self.foreground_app_start_time = None
         
@@ -100,6 +104,19 @@ class ActivityTrack:
         # Screen metrics for distance calculation
         self._init_screen_metrics()
 
+    def _add_foreground_duration(self, app_name: str, start_ts: float | None, end_ts: float | None) -> None:
+        """Accumulate a duration into the foreground buffer, split by local hour/date."""
+        if not app_name or app_name == "Unknown" or start_ts is None or end_ts is None:
+            return
+        if end_ts <= start_ts:
+            return
+
+        for date_part, hour_part, seconds in split_interval_by_local_hour(start_ts, end_ts):
+            if seconds <= 0:
+                continue
+            key = (date_part, hour_part, app_name)
+            self.foreground_time_buffer[key] = self.foreground_time_buffer.get(key, 0.0) + float(seconds)
+
     def set_idle_timeout(self, seconds):
         """Set the idle timeout threshold in seconds.
         
@@ -118,9 +135,7 @@ class ActivityTrack:
             
             # If we were idle and now active, record the idle time
             if self.is_idle and self.idle_start_time:
-                idle_duration = current_time - self.idle_start_time
-                if idle_duration > 0:
-                    self.foreground_time_buffer['[Idle]'] = self.foreground_time_buffer.get('[Idle]', 0) + idle_duration
+                self._add_foreground_duration('[Idle]', self.idle_start_time, current_time)
                 self.is_idle = False
                 self.idle_start_time = None
                 # Reset foreground tracking to current app
@@ -238,8 +253,7 @@ class ActivityTrack:
                     # Use last_activity_time as the cutoff
                     active_duration = self.last_activity_time - self.foreground_app_start_time
                     if active_duration > 0 and self.current_foreground_app != "Unknown":
-                        app = self.current_foreground_app
-                        self.foreground_time_buffer[app] = self.foreground_time_buffer.get(app, 0) + active_duration
+                        self._add_foreground_duration(self.current_foreground_app, self.foreground_app_start_time, self.last_activity_time)
                 
                 # Start tracking idle time
                 self.is_idle = True
@@ -251,9 +265,7 @@ class ActivityTrack:
                 # But just in case, ensure state is consistent
                 self.is_idle = False
                 if self.idle_start_time:
-                    idle_duration = current_time - self.idle_start_time
-                    if idle_duration > 0:
-                        self.foreground_time_buffer['[Idle]'] = self.foreground_time_buffer.get('[Idle]', 0) + idle_duration
+                    self._add_foreground_duration('[Idle]', self.idle_start_time, current_time)
                 self.idle_start_time = None
                 self.current_foreground_app = current_app
                 self.foreground_app_start_time = current_time
@@ -263,8 +275,7 @@ class ActivityTrack:
                 if self.foreground_app_start_time:
                     elapsed = current_time - self.foreground_app_start_time
                     if elapsed > 0 and self.current_foreground_app != "Unknown":
-                        app = self.current_foreground_app
-                        self.foreground_time_buffer[app] = self.foreground_time_buffer.get(app, 0) + elapsed
+                        self._add_foreground_duration(self.current_foreground_app, self.foreground_app_start_time, current_time)
                 
                 # Start tracking new app
                 self.current_foreground_app = current_app
@@ -286,37 +297,40 @@ class ActivityTrack:
         with self.lock:
             if self.is_idle and self.idle_start_time:
                 # Record accumulated idle time
-                idle_duration = current_time - self.idle_start_time
-                if idle_duration > 0:
-                    self.foreground_time_buffer['[Idle]'] = self.foreground_time_buffer.get('[Idle]', 0) + idle_duration
+                self._add_foreground_duration('[Idle]', self.idle_start_time, current_time)
                 # Reset idle start time but keep idle state
                 self.idle_start_time = current_time
             elif self.current_foreground_app and self.foreground_app_start_time:
                 elapsed = current_time - self.foreground_app_start_time
                 if elapsed > 0 and self.current_foreground_app != "Unknown":
-                    app = self.current_foreground_app
-                    self.foreground_time_buffer[app] = self.foreground_time_buffer.get(app, 0) + elapsed
+                    self._add_foreground_duration(self.current_foreground_app, self.foreground_app_start_time, current_time)
                 # Reset start time but keep current app
                 self.foreground_app_start_time = current_time
 
     def get_foreground_time_snapshot(self):
         """Get a thread-safe snapshot of current foreground time buffer."""
         with self.lock:
-            # Include any accumulated time for current foreground app or idle
-            buffer_copy = dict(self.foreground_time_buffer)
+            today = datetime.date.today()
+            totals = defaultdict(float)
+            for (date_part, _hour_part, app_name), seconds in self.foreground_time_buffer.items():
+                if date_part == today and seconds > 0:
+                    totals[app_name] += float(seconds)
+
             current_time = time.time()
             
             if self.is_idle and self.idle_start_time:
                 # Currently idle - add accumulated idle time
-                idle_elapsed = current_time - self.idle_start_time
-                if idle_elapsed > 0:
-                    buffer_copy['[Idle]'] = buffer_copy.get('[Idle]', 0) + idle_elapsed
+                for date_part, _hour_part, seconds in split_interval_by_local_hour(self.idle_start_time, current_time):
+                    if date_part == today and seconds > 0:
+                        totals['[Idle]'] += float(seconds)
             elif self.current_foreground_app and self.foreground_app_start_time:
                 elapsed = current_time - self.foreground_app_start_time
                 if elapsed > 0 and self.current_foreground_app != "Unknown":
-                    app = self.current_foreground_app
-                    buffer_copy[app] = buffer_copy.get(app, 0) + elapsed
-            return buffer_copy
+                    for date_part, _hour_part, seconds in split_interval_by_local_hour(self.foreground_app_start_time, current_time):
+                        if date_part == today and seconds > 0:
+                            totals[self.current_foreground_app] += float(seconds)
+
+            return dict(totals)
 
     def get_stats_snapshot(self):
         """Get a thread-safe snapshot of current buffers + DB stats."""
@@ -688,8 +702,8 @@ class ActivityTrack:
             
             if has_time:
                 # Flush foreground time buffer
-                for app_name, seconds in self.foreground_time_buffer.items():
+                for (date_part, hour_part, app_name), seconds in self.foreground_time_buffer.items():
                     if seconds > 0:
-                        self.db.update_foreground_time(today, current_hour, app_name, int(seconds))
+                        self.db.update_foreground_time(date_part, hour_part, app_name, int(seconds))
                 
                 self.foreground_time_buffer.clear()
