@@ -541,6 +541,21 @@ class Database:
             cursor.execute('SELECT DISTINCT app_name FROM app_stats ORDER BY app_name')
             return [row[0] for row in cursor.fetchall()]
 
+    def get_apps_by_date_range(self, start_date=None, end_date=None):
+        """Get list of unique app names that have activity within the date range."""
+        if start_date is None or end_date is None:
+            return self.get_all_apps()
+            
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT DISTINCT app_name 
+                FROM app_stats 
+                WHERE date BETWEEN ? AND ? 
+                ORDER BY app_name
+            ''', (start_date, end_date))
+            return [row[0] for row in cursor.fetchall()]
+
     def _migrate_app_metadata_schema(self):
         with self.get_connection() as conn:
             cursor = conn.cursor()

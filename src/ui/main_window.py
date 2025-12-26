@@ -733,6 +733,7 @@ class MainWindow(QMainWindow):
 
     def on_heatmap_range_changed(self, range_key):
         """Handle time range selection change in heatmap."""
+        self.refresh_heatmap_app_list()
         self.update_heatmap()
 
     def on_heatmap_app_changed(self, app_name):
@@ -746,8 +747,9 @@ class MainWindow(QMainWindow):
         self.heatmap_app_filter.clear()
         self.heatmap_app_filter.addItem(tr('heatmap.all_apps'))
         
-        # Get all apps from database
-        apps = self.tracker.db.get_all_apps()
+        # Get apps from database based on selected time range
+        start_date, end_date = self.heatmap_time_selector.get_date_range()
+        apps = self.tracker.db.get_apps_by_date_range(start_date, end_date)
         metadata = self.tracker.db.get_app_metadata_dict()
         
         for app in apps:
