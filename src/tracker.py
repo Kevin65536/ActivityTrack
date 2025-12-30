@@ -90,6 +90,13 @@ class ActivityTrack:
         self.idle_timeout = 300  # Default 5 minutes (300 seconds)
         self.is_idle = False  # Current idle state
         self.idle_start_time = None  # When idle period started
+
+        # Detect large wall-clock jumps (e.g. PC sleep/hibernate) so we don't
+        # incorrectly count suspended time as foreground/idle usage.
+        # Tracker loops run every 1s/5s, so anything much larger than that is
+        # almost certainly suspend/resume.
+        self.suspend_gap_threshold_seconds = 120.0
+        self._last_wall_time_observed = None  # type: float | None
         
         self.lock = threading.Lock()
         self.last_mouse_pos = None
@@ -116,6 +123,29 @@ class ActivityTrack:
                 continue
             key = (date_part, hour_part, app_name)
             self.foreground_time_buffer[key] = self.foreground_time_buffer.get(key, 0.0) + float(seconds)
+
+    def _detect_and_handle_suspend_gap_unlocked(self, current_time: float) -> bool:
+        """Detect a large wall-clock gap and reset tracking to avoid overcounting.
+
+        Returns:
+            True if a suspend-like gap was detected and tracking state was reset.
+        """
+        last = self._last_wall_time_observed
+        self._last_wall_time_observed = float(current_time)
+        if last is None:
+            return False
+
+        gap = float(current_time) - float(last)
+        if gap <= float(self.suspend_gap_threshold_seconds):
+            return False
+
+        # Treat as a session break: do NOT attribute the gap to any app or idle.
+        self.last_activity_time = float(current_time)
+        self.is_idle = False
+        self.idle_start_time = None
+        if self.current_foreground_app is not None:
+            self.foreground_app_start_time = float(current_time)
+        return True
 
     def set_idle_timeout(self, seconds):
         """Set the idle timeout threshold in seconds.
@@ -235,6 +265,11 @@ class ActivityTrack:
         current_time = time.time()
         
         with self.lock:
+            # If the process was suspended (sleep/hibernate), avoid counting the gap.
+            if self._detect_and_handle_suspend_gap_unlocked(current_time):
+                self.current_foreground_app = current_app
+                self.foreground_app_start_time = current_time
+
             # Check if user has become idle
             was_idle = self.is_idle
             now_idle = self._check_idle_state_unlocked()
@@ -295,6 +330,10 @@ class ActivityTrack:
         """Record current foreground app's accumulated time before flush."""
         current_time = time.time()
         with self.lock:
+            # If we resumed from suspend, skip attributing the gap.
+            if self._detect_and_handle_suspend_gap_unlocked(current_time):
+                return
+
             if self.is_idle and self.idle_start_time:
                 # Record accumulated idle time
                 self._add_foreground_duration('[Idle]', self.idle_start_time, current_time)
@@ -317,6 +356,10 @@ class ActivityTrack:
                     totals[app_name] += float(seconds)
 
             current_time = time.time()
+
+            # Prevent snapshot from showing huge overcount after suspend/resume.
+            if self._detect_and_handle_suspend_gap_unlocked(current_time):
+                return dict(totals)
             
             if self.is_idle and self.idle_start_time:
                 # Currently idle - add accumulated idle time

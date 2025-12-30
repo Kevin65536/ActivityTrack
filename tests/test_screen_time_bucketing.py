@@ -2,6 +2,7 @@ import unittest
 import datetime
 import os
 import tempfile
+from unittest.mock import patch
 
 from src.screen_time import split_interval_by_local_hour
 from src.tracker import ActivityTrack
@@ -83,6 +84,44 @@ class TestScreenTimeBucketing(unittest.TestCase):
             self.assertGreaterEqual(len(rows), 1)
             self.assertTrue(all(total <= 3600 for _hour, total in rows))
             self.assertEqual(sum(total for _hour, total in rows), int(end - start))
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    def test_suspend_gap_not_counted_as_foreground(self):
+        """A long wall-clock gap (sleep/hibernate) should not be counted as screen time."""
+        fd, path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        try:
+            tracker = ActivityTrack(path)
+            tracker.get_active_app_name = lambda: "dummy.exe"
+            tracker.suspend_gap_threshold_seconds = 120.0
+
+            t0 = datetime.datetime(2025, 12, 24, 10, 0, 0).timestamp()
+            t1 = t0 + 4.0
+            t2 = t1 + 7200.0
+
+            with tracker.lock:
+                tracker.current_foreground_app = "dummy.exe"
+                tracker.foreground_app_start_time = t0
+                tracker.last_activity_time = t0
+                tracker.is_idle = False
+                tracker.idle_start_time = None
+                tracker._last_wall_time_observed = t0
+
+            # First tick after 4 seconds: should count ~4 seconds.
+            # Next tick after a 2-hour suspend: should NOT add 2 hours.
+            with patch('src.tracker.time.time', side_effect=[t1, t2]):
+                tracker._record_foreground_time()
+                tracker._record_foreground_time()
+
+            with tracker.lock:
+                total_seconds = sum(tracker.foreground_time_buffer.values())
+
+            self.assertGreaterEqual(total_seconds, 3.9)
+            self.assertLess(total_seconds, 10.0)
         finally:
             try:
                 os.remove(path)
