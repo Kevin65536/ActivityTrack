@@ -108,6 +108,9 @@ class ActivityTrack:
         self.keyboard_hook = None
         self.mouse_hook = None
         
+        # Track held keys to prevent counting repeats
+        self.keys_held = set()
+        
         # Screen metrics for distance calculation
         self._init_screen_metrics()
 
@@ -540,11 +543,19 @@ class ActivityTrack:
         result = user32.CallNextHookEx(self.keyboard_hook, nCode, wParam, lParam)
         try:
             if nCode >= 0:
-                if wParam == WM_KEYDOWN or wParam == WM_SYSKEYDOWN: # Count on press, not release
-                    kb_struct = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                    # Check if it's a physical key (not injected)
-                    if not (kb_struct.flags & 0x10):  # LLKHF_INJECTED
-                        self.on_press(kb_struct.vkCode, kb_struct.scanCode)
+                kb_struct = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                vk = kb_struct.vkCode
+                
+                if wParam == WM_KEYDOWN or wParam == WM_SYSKEYDOWN:
+                    # Only count if this is the initial press (key not already held)
+                    if vk not in self.keys_held:
+                        self.keys_held.add(vk)
+                        # Check if it's a physical key (not injected)
+                        if not (kb_struct.flags & 0x10):  # LLKHF_INJECTED
+                            self.on_press(vk, kb_struct.scanCode)
+                elif wParam == WM_KEYUP or wParam == WM_SYSKEYUP:
+                    # Remove from held keys on release
+                    self.keys_held.discard(vk)
         except Exception:
             pass
         return result
