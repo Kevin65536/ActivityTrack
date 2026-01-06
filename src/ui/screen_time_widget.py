@@ -371,6 +371,9 @@ class AppTimePieChart(QWidget):
         self.chart.legend().setLabelColor(QColor("#ffffff"))
         self.chart.legend().setAlignment(Qt.AlignRight)
         
+        # Disable animations to prevent flickering
+        self.chart.setAnimationOptions(QChart.NoAnimation)
+        
         self.chart_view = QChartView(self.chart)
         self.chart_view.setRenderHint(QPainter.Antialiasing)
         self.chart_view.setStyleSheet("background: #2b2b2b; border-radius: 10px;")
@@ -382,6 +385,10 @@ class AppTimePieChart(QWidget):
         self.show_idle = True  # Default: show idle time
         self._cached_app_data = []
         self._cached_total_seconds = 0
+        
+        # Persistent series - reuse instead of recreating
+        self._series = QPieSeries()
+        self.chart.addSeries(self._series)
         
         # Color palette
         self.colors = [
@@ -415,8 +422,6 @@ class AppTimePieChart(QWidget):
     
     def _redraw_chart(self):
         """Redraw the chart based on current show_idle state."""
-        self.chart.removeAllSeries()
-        
         # Filter data based on show_idle state
         if self.show_idle:
             app_data = self._cached_app_data
@@ -426,43 +431,59 @@ class AppTimePieChart(QWidget):
             app_data = [(app, secs) for app, secs in self._cached_app_data if app != '[Idle]']
             total_seconds = sum(secs for _, secs in app_data)
         
-        if not app_data or total_seconds <= 0:
-            return
+        # Prepare new slice data
+        slice_data = []  # List of (display_name, seconds, color)
         
-        series = QPieSeries()
-        
-        # Show top 10 apps, group rest as "Others"
-        top_apps = app_data[:10]
-        others_seconds = sum(s for _, s in app_data[10:]) if len(app_data) > 10 else 0
-        
-        color_index = 0
-        for i, (app_name, seconds) in enumerate(top_apps):
-            if seconds <= 0:
-                continue
+        if app_data and total_seconds > 0:
+            # Show top 10 apps, group rest as "Others"
+            top_apps = app_data[:10]
+            others_seconds = sum(s for _, s in app_data[10:]) if len(app_data) > 10 else 0
             
-            # Get friendly name - special handling for [Idle]
-            if app_name == '[Idle]':
-                display_name = tr('screen_time.idle')
-                slice = series.append(display_name, seconds)
-                slice.setColor(QColor('#666666'))  # Gray for idle
-            else:
-                if app_name in self.metadata and self.metadata[app_name].get('friendly_name'):
-                    display_name = self.metadata[app_name]['friendly_name']
-                else:
-                    display_name = app_name[:-4] if app_name.lower().endswith('.exe') else app_name
+            color_index = 0
+            for app_name, seconds in top_apps:
+                if seconds <= 0:
+                    continue
                 
-                slice = series.append(display_name, seconds)
-                slice.setColor(QColor(self.colors[color_index % len(self.colors)]))
-                color_index += 1
+                # Get friendly name - special handling for [Idle]
+                if app_name == '[Idle]':
+                    display_name = tr('screen_time.idle')
+                    color = QColor('#666666')  # Gray for idle
+                else:
+                    if app_name in self.metadata and self.metadata[app_name].get('friendly_name'):
+                        display_name = self.metadata[app_name]['friendly_name']
+                    else:
+                        display_name = app_name[:-4] if app_name.lower().endswith('.exe') else app_name
+                    color = QColor(self.colors[color_index % len(self.colors)])
+                    color_index += 1
+                
+                slice_data.append((display_name, seconds, color))
             
-            slice.setLabelVisible(False)
+            if others_seconds > 0:
+                slice_data.append((tr('screen_time.others'), others_seconds, QColor("#555555")))
         
-        if others_seconds > 0:
-            slice = series.append(tr('screen_time.others'), others_seconds)
-            slice.setColor(QColor("#555555"))
-            slice.setLabelVisible(False)
+        # Update slices in-place to avoid flickering
+        current_count = self._series.count()
+        new_count = len(slice_data)
         
-        self.chart.addSeries(series)
+        # Update existing slices or add new ones
+        for i, (display_name, seconds, color) in enumerate(slice_data):
+            if i < current_count:
+                # Update existing slice
+                pie_slice = self._series.slices()[i]
+                pie_slice.setLabel(display_name)
+                pie_slice.setValue(seconds)
+                pie_slice.setColor(color)
+                pie_slice.setLabelVisible(False)
+            else:
+                # Add new slice
+                pie_slice = self._series.append(display_name, seconds)
+                pie_slice.setColor(color)
+                pie_slice.setLabelVisible(False)
+        
+        # Remove extra slices (from end to start to avoid index shifting)
+        while self._series.count() > new_count:
+            pie_slice = self._series.slices()[-1]
+            self._series.remove(pie_slice)
 
 
 class ScreenTimeWidget(QWidget):
