@@ -383,6 +383,58 @@ class SettingsWidget(QWidget):
         self.idle_group.setLayout(idle_layout)
         scroll_layout.addWidget(self.idle_group)
         
+        # Break Reminder Group
+        self.break_group = self.create_group(tr('settings.break_reminder'))
+        break_layout = QVBoxLayout()
+        break_layout.setSpacing(15)
+        
+        # Enable break reminders checkbox
+        self.break_enabled_check = QCheckBox(tr('settings.break_enabled'))
+        self.break_enabled_check.stateChanged.connect(self.on_break_enabled_changed)
+        break_layout.addWidget(self.break_enabled_check)
+        
+        # Break reminder interval setting
+        break_interval_layout = QHBoxLayout()
+        self.break_interval_label = QLabel(tr('settings.break_interval'))
+        self.break_interval_label.setStyleSheet("color: #ffffff; font-size: 14px; background-color: transparent;")
+        break_interval_layout.addWidget(self.break_interval_label)
+        
+        self.break_interval_spin = QSpinBox()
+        self.break_interval_spin.setRange(0, 180)  # 0 = disabled, up to 3 hours
+        self.break_interval_spin.setSpecialValueText(tr('settings.break_disabled'))
+        self.break_interval_spin.setSuffix(tr('settings.break_minutes'))
+        self.break_interval_spin.setFixedWidth(120)
+        self.break_interval_spin.valueChanged.connect(self.on_break_interval_changed)
+        break_interval_layout.addWidget(self.break_interval_spin)
+        
+        break_interval_layout.addStretch()
+        break_layout.addLayout(break_interval_layout)
+        
+        # Suggested break duration setting
+        break_duration_layout = QHBoxLayout()
+        self.break_duration_label = QLabel(tr('settings.break_duration'))
+        self.break_duration_label.setStyleSheet("color: #ffffff; font-size: 14px; background-color: transparent;")
+        break_duration_layout.addWidget(self.break_duration_label)
+        
+        self.break_duration_spin = QSpinBox()
+        self.break_duration_spin.setRange(1, 30)  # 1 to 30 minutes
+        self.break_duration_spin.setSuffix(tr('settings.break_minutes'))
+        self.break_duration_spin.setFixedWidth(120)
+        self.break_duration_spin.valueChanged.connect(self.on_break_duration_changed)
+        break_duration_layout.addWidget(self.break_duration_spin)
+        
+        break_duration_layout.addStretch()
+        break_layout.addLayout(break_duration_layout)
+        
+        # Break reminder hint
+        self.break_hint = QLabel(tr('settings.break_hint'))
+        self.break_hint.setStyleSheet("color: #888888; font-size: 12px; background-color: transparent;")
+        self.break_hint.setWordWrap(True)
+        break_layout.addWidget(self.break_hint)
+        
+        self.break_group.setLayout(break_layout)
+        scroll_layout.addWidget(self.break_group)
+        
         # Appearance Group
         self.appearance_group = self.create_group(tr('settings.appearance'))
         appearance_layout = QVBoxLayout()
@@ -564,6 +616,16 @@ class SettingsWidget(QWidget):
         self.idle_timeout_spin.setSuffix(tr('settings.idle_minutes'))
         self.idle_timeout_hint.setText(tr('settings.idle_timeout_hint'))
         
+        # Break reminder group
+        self.break_group.setTitle(tr('settings.break_reminder'))
+        self.break_enabled_check.setText(tr('settings.break_enabled'))
+        self.break_interval_label.setText(tr('settings.break_interval'))
+        self.break_interval_spin.setSpecialValueText(tr('settings.break_disabled'))
+        self.break_interval_spin.setSuffix(tr('settings.break_minutes'))
+        self.break_duration_label.setText(tr('settings.break_duration'))
+        self.break_duration_spin.setSuffix(tr('settings.break_minutes'))
+        self.break_hint.setText(tr('settings.break_hint'))
+        
         # Appearance group
         self.appearance_group.setTitle(tr('settings.appearance'))
         self.language_label.setText(tr('settings.language'))
@@ -630,6 +692,9 @@ class SettingsWidget(QWidget):
         self.kb_layout_combo.blockSignals(True)
         self.language_combo.blockSignals(True)
         self.idle_timeout_spin.blockSignals(True)
+        self.break_enabled_check.blockSignals(True)
+        self.break_interval_spin.blockSignals(True)
+        self.break_duration_spin.blockSignals(True)
         
         # Load values from config (trust config file, not registry)
         self.autostart_check.setChecked(self.config.autostart)
@@ -639,6 +704,13 @@ class SettingsWidget(QWidget):
         # Load idle timeout (convert seconds to minutes for display)
         idle_seconds = self.config.idle_timeout_seconds
         self.idle_timeout_spin.setValue(idle_seconds // 60)
+        
+        # Load break reminder settings
+        self.break_enabled_check.setChecked(self.config.break_reminder_enabled)
+        self.break_interval_spin.setValue(self.config.break_reminder_interval_minutes)
+        self.break_duration_spin.setValue(self.config.break_reminder_duration_minutes)
+        # Update enabled state of interval/duration based on checkbox
+        self._update_break_controls_enabled()
         
         # Set language combo
         current_lang = self.config.language
@@ -671,6 +743,17 @@ class SettingsWidget(QWidget):
         self.kb_layout_combo.blockSignals(False)
         self.language_combo.blockSignals(False)
         self.idle_timeout_spin.blockSignals(False)
+        self.break_enabled_check.blockSignals(False)
+        self.break_interval_spin.blockSignals(False)
+        self.break_duration_spin.blockSignals(False)
+    
+    def _update_break_controls_enabled(self):
+        """Update enabled state of break reminder controls based on checkbox."""
+        enabled = self.break_enabled_check.isChecked()
+        self.break_interval_spin.setEnabled(enabled)
+        self.break_duration_spin.setEnabled(enabled)
+        self.break_interval_label.setEnabled(enabled)
+        self.break_duration_label.setEnabled(enabled)
     
     def on_autostart_changed(self, state):
         """Handle autostart checkbox change."""
@@ -710,6 +793,23 @@ class SettingsWidget(QWidget):
         """Handle idle timeout spinbox change."""
         # Convert minutes to seconds for storage
         self.config.idle_timeout_seconds = value * 60
+        self.settings_changed.emit()
+    
+    def on_break_enabled_changed(self, state):
+        """Handle break reminder enabled checkbox change."""
+        enabled = (state == Qt.Checked.value)
+        self.config.break_reminder_enabled = enabled
+        self._update_break_controls_enabled()
+        self.settings_changed.emit()
+    
+    def on_break_interval_changed(self, value):
+        """Handle break reminder interval spinbox change."""
+        self.config.break_reminder_interval_minutes = value
+        self.settings_changed.emit()
+    
+    def on_break_duration_changed(self, value):
+        """Handle break reminder duration spinbox change."""
+        self.config.break_reminder_duration_minutes = value
         self.settings_changed.emit()
     
     def on_language_changed(self, index):

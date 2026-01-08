@@ -18,6 +18,10 @@ DEFAULT_CONFIG = {
     'show_notifications': True,
     'language': 'en',  # 'en' for English, 'zh' for Chinese
     'idle_timeout_seconds': 300,  # 5 minutes, 0 to disable idle detection
+    # Break reminder settings
+    'break_reminder_enabled': True,  # Enable/disable break reminders
+    'break_reminder_interval_minutes': 45,  # Time in minutes before reminder (0 to disable)
+    'break_reminder_duration_minutes': 5,  # Suggested break duration in minutes
 }
 
 CONFIG_FILE = 'config.json'
@@ -164,6 +168,33 @@ class Config:
     @idle_timeout_seconds.setter
     def idle_timeout_seconds(self, value):
         self._config['idle_timeout_seconds'] = max(0, int(value))
+        self.save()
+    
+    @property
+    def break_reminder_enabled(self):
+        return self._config.get('break_reminder_enabled', True)
+    
+    @break_reminder_enabled.setter
+    def break_reminder_enabled(self, value):
+        self._config['break_reminder_enabled'] = bool(value)
+        self.save()
+    
+    @property
+    def break_reminder_interval_minutes(self):
+        return self._config.get('break_reminder_interval_minutes', 45)
+    
+    @break_reminder_interval_minutes.setter
+    def break_reminder_interval_minutes(self, value):
+        self._config['break_reminder_interval_minutes'] = max(0, int(value))
+        self.save()
+    
+    @property
+    def break_reminder_duration_minutes(self):
+        return self._config.get('break_reminder_duration_minutes', 5)
+    
+    @break_reminder_duration_minutes.setter
+    def break_reminder_duration_minutes(self, value):
+        self._config['break_reminder_duration_minutes'] = max(1, int(value))
         self.save()
     
     @staticmethod

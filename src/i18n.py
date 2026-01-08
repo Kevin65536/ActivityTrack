@@ -132,6 +132,19 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'settings.idle_minutes': ' minutes',
         'settings.idle_disabled': 'Disabled',
         
+        # Break reminder settings
+        'settings.break_reminder': 'Break Reminder',
+        'settings.break_enabled': 'Enable break reminders',
+        'settings.break_interval': 'Remind after:',
+        'settings.break_duration': 'Suggested break:',
+        'settings.break_minutes': ' minutes',
+        'settings.break_disabled': 'Disabled',
+        'settings.break_hint': 'Get notified to take a break after continuous screen usage. The reminder will only trigger for genuine user activity (not automated clicks).',
+        
+        # Break reminder notifications
+        'break_reminder.title': 'Time for a Break! 🧘',
+        'break_reminder.message': "You've been using your computer for {minutes} minutes. Consider taking a {break_duration}-minute break to rest your eyes and stretch.",
+        
         # Theme names
         'theme.default': 'Default (Blue → Green → Yellow → Orange)',
         'theme.fire': 'Fire (Black → Red → Yellow → White)',
@@ -301,6 +314,19 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'settings.idle_timeout_hint': '无输入多长时间后标记为空闲。设为 0 禁用此功能。',
         'settings.idle_minutes': ' 分钟',
         'settings.idle_disabled': '已禁用',
+        
+        # Break reminder settings
+        'settings.break_reminder': '久坐提醒',
+        'settings.break_enabled': '启用久坐提醒',
+        'settings.break_interval': '提醒间隔：',
+        'settings.break_duration': '建议休息：',
+        'settings.break_minutes': ' 分钟',
+        'settings.break_disabled': '已禁用',
+        'settings.break_hint': '在持续使用电脑一段时间后收到休息提醒。提醒只会在检测到真实用户活动时触发（不会被自动化程序触发）。',
+        
+        # Break reminder notifications
+        'break_reminder.title': '该休息一下了！🧘',
+        'break_reminder.message': '您已连续使用电脑 {minutes} 分钟。建议休息 {break_duration} 分钟，让眼睛休息一下，活动活动身体。',
         
         # Theme names
         'theme.default': '默认（蓝 → 绿 → 黄 → 橙）',

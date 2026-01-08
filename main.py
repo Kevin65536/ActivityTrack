@@ -11,6 +11,7 @@ from src.tracker import ActivityTrack
 from src.ui.main_window import MainWindow
 from src.ui.tray_icon import TrayIcon
 from src.config import Config
+from src.break_reminder import BreakReminder
 
 
 def _load_app_icon():
@@ -86,11 +87,32 @@ def main():
         window.setWindowIcon(app_icon)
     tray = TrayIcon()
     
+    # Initialize break reminder
+    break_reminder = BreakReminder(tracker, config)
+    
+    # Set up notification callback using tray icon
+    def show_break_notification(title, message):
+        """Show a Windows notification via the system tray icon."""
+        if config.show_notifications:
+            tray.showMessage(title, message, tray.MessageIcon.Information, 10000)
+    
+    break_reminder.set_notification_callback(show_break_notification)
+    break_reminder.start()
+    
+    # Connect settings change to break reminder
+    def on_settings_changed():
+        # Break reminder will pick up new config values automatically
+        # since it reads from config on each check
+        pass
+    
+    window.settings_tab.settings_changed.connect(on_settings_changed)
+    
     # Connect signals
     tray.show_window_signal.connect(window.show)
     tray.show_window_signal.connect(window.activateWindow)
     
     def quit_app():
+        break_reminder.stop()
         if not skip_tracker:
             tracker.stop()
         app.quit()
