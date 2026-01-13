@@ -488,10 +488,11 @@ class AppTimePieChart(QWidget):
 
 class ScreenTimeWidget(QWidget):
     """Main Screen Time tab widget."""
-    def __init__(self, tracker, db):
+    def __init__(self, tracker, db, config=None):
         super().__init__()
         self.tracker = tracker
         self.db = db
+        self.config = config
         
         self.setup_ui()
     
@@ -500,7 +501,7 @@ class ScreenTimeWidget(QWidget):
         layout.setSpacing(20)
         layout.setContentsMargins(30, 30, 30, 30)
         
-        # Header with title and time selector
+        # Header with title, category filter, and time selector
         header = QHBoxLayout()
         
         self.title_label = QLabel(tr('screen_time.title'))
@@ -509,6 +510,48 @@ class ScreenTimeWidget(QWidget):
         header.addWidget(self.title_label)
         
         header.addStretch()
+        
+        # Category filter dropdown
+        self.category_filter = QComboBox()
+        self.category_filter.setMinimumWidth(120)
+        self.category_filter.addItem(tr('category.all'), 'all')
+        self.category_filter.addItem(tr('category.productivity'), 'productivity')
+        self.category_filter.addItem(tr('category.other'), 'other')
+        self.category_filter.setStyleSheet("""
+            QComboBox {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #3d3d3d;
+                border-radius: 5px;
+                padding: 6px 12px;
+                font-size: 13px;
+            }
+            QComboBox:hover {
+                background-color: #3d3d3d;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #aaaaaa;
+                margin-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2b2b2b;
+                color: #ffffff;
+                selection-background-color: #00e676;
+                selection-color: #1e1e1e;
+                border: 1px solid #3d3d3d;
+            }
+        """)
+        self.category_filter.currentIndexChanged.connect(self.on_category_changed)
+        header.addWidget(self.category_filter)
+        
+        header.addSpacing(10)
         
         self.time_selector = TimeRangeSelector()
         self.time_selector.range_changed.connect(self.on_range_changed)
@@ -557,6 +600,10 @@ class ScreenTimeWidget(QWidget):
     def on_range_changed(self, range_key):
         self.refresh_data()
     
+    def on_category_changed(self, index):
+        """Handle category filter selection change."""
+        self.refresh_data()
+    
     def refresh_data(self):
         """Refresh all data displays."""
         start_date, end_date = self.time_selector.get_date_range()
@@ -585,6 +632,18 @@ class ScreenTimeWidget(QWidget):
             app_data = sorted(app_dict.items(), key=lambda x: x[1], reverse=True)
         else:
             app_data = list(app_data)
+        
+        # Apply category filter
+        selected_category = self.category_filter.currentData()
+        if selected_category and selected_category != 'all' and self.config:
+            # Get app groups from config
+            app_groups = self.config.app_groups
+            category_apps = set(app_groups.get(selected_category, []))
+            
+            # Filter app_data to only include apps in the selected category
+            # Also exclude [Idle] when category filter is active
+            app_data = [(app, secs) for app, secs in app_data 
+                       if app in category_apps]
         
         # Separate idle time from active apps
         idle_seconds = 0

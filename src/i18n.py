@@ -107,6 +107,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'screen_time.click_hide_idle': 'Click chart to hide idle time',
         'screen_time.click_show_idle': 'Click chart to show idle time',
         
+        # Category filter
+        'category.all': 'All Apps',
+        'category.productivity': 'Productivity',
+        'category.other': 'Other',
+        
         # Settings
         'settings.title': 'Settings',
         'settings.general': 'General',
@@ -311,6 +316,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'screen_time.click_toggle_idle': '点击图表隐藏空闲时间',
         'screen_time.click_hide_idle': '点击图表隐藏空闲时间',
         'screen_time.click_show_idle': '点击图表显示空闲时间',
+        
+        # Category filter
+        'category.all': '全部应用',
+        'category.productivity': '生产力',
+        'category.other': '其他',
         
         # Settings
         'settings.title': '设置',

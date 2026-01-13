@@ -287,7 +287,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.history_tab, tr('tab.history'))
         
         # Screen Time Tab
-        self.screen_time_tab = ScreenTimeWidget(self.tracker, self.tracker.db)
+        self.screen_time_tab = ScreenTimeWidget(self.tracker, self.tracker.db, self.config)
         self.tabs.addTab(self.screen_time_tab, tr('tab.screen_time'))
         
         # Settings Tab
