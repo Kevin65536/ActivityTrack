@@ -86,7 +86,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'history.legend.clicks': 'Clicks',
         'history.legend.avg_keys': 'Avg Keys',
         'history.legend.avg_clicks': 'Avg Clicks',
+        'history.legend.activity': 'Activity',
         'history.no_data': 'No Data',
+        'history.top_apps': 'Top Apps',
+        'history.chart.top_apps_weekday': 'Most Used App by Day of Week',
+        'history.chart.top_apps_hourly': 'Most Used App by Hour of Day',
         'history.weekdays': ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
         
         # Screen Time
@@ -306,7 +310,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         'history.legend.clicks': '点击',
         'history.legend.avg_keys': '平均按键',
         'history.legend.avg_clicks': '平均点击',
+        'history.legend.activity': '活动量',
         'history.no_data': '暂无数据',
+        'history.top_apps': '热门应用',
+        'history.chart.top_apps_weekday': '每周各日最常用应用',
+        'history.chart.top_apps_hourly': '每小时最常用应用',
         'history.weekdays': ['周一', '周二', '周三', '周四', '周五', '周六', '周日'],
         
         # Screen Time

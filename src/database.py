@@ -531,6 +531,72 @@ class Database:
                 ''')
             return cursor.fetchall()
 
+    def get_top_app_by_weekday(self):
+        """Get the most used application for each day of week.
+        
+        Returns list of (weekday_idx, app_name, total_activity) where weekday_idx is 0-6 (Mon-Sun).
+        Only returns entries for weekdays that have data.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            # SQLite %w: 0=Sunday, 1=Monday, ..., 6=Saturday
+            # We want to return 0=Monday, so we transform: (dow + 6) % 7
+            cursor.execute('''
+                WITH app_dow_totals AS (
+                    SELECT 
+                        CAST(strftime('%w', date) AS INTEGER) as sqlite_dow,
+                        app_name,
+                        SUM(key_count + clicks) as total_activity
+                    FROM hourly_app_stats
+                    GROUP BY sqlite_dow, app_name
+                ),
+                ranked AS (
+                    SELECT 
+                        (sqlite_dow + 6) % 7 as weekday_idx,
+                        app_name,
+                        total_activity,
+                        ROW_NUMBER() OVER (PARTITION BY sqlite_dow ORDER BY total_activity DESC) as rn
+                    FROM app_dow_totals
+                )
+                SELECT weekday_idx, app_name, total_activity
+                FROM ranked
+                WHERE rn = 1
+                ORDER BY weekday_idx
+            ''')
+            return cursor.fetchall()
+
+    def get_top_app_by_hour(self):
+        """Get the most used application for each hour of day.
+        
+        Returns list of (hour, app_name, total_activity) for hours 0-23.
+        Only returns entries for hours that have data.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                WITH app_hour_totals AS (
+                    SELECT 
+                        hour,
+                        app_name,
+                        SUM(key_count + clicks) as total_activity
+                    FROM hourly_app_stats
+                    GROUP BY hour, app_name
+                ),
+                ranked AS (
+                    SELECT 
+                        hour,
+                        app_name,
+                        total_activity,
+                        ROW_NUMBER() OVER (PARTITION BY hour ORDER BY total_activity DESC) as rn
+                    FROM app_hour_totals
+                )
+                SELECT hour, app_name, total_activity
+                FROM ranked
+                WHERE rn = 1
+                ORDER BY hour
+            ''')
+            return cursor.fetchall()
+
     def get_all_apps(self):
         """Get list of all unique app names for dropdown."""
         with self.get_connection() as conn:

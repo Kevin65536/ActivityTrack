@@ -256,22 +256,57 @@ class TimelineWidget(BaseChartWidget):
         self.figure.autofmt_xdate()
 
 class InsightWidget(BaseChartWidget):
-    """Displays average statistics (Day of Week / Hour of Day)."""
+    """Displays average statistics (Day of Week / Hour of Day) and Top Apps."""
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.db = db
         self.current_app = None
         self.current_mode = 'weekday'
+        self.top_apps_submode = 'weekday'  # Sub-mode for Top Apps (weekday or hourly)
         
         self.setup_buttons([
             ('weekday', tr('history.weekday')),
-            ('hour', tr('history.hourly'))
+            ('hour', tr('history.hourly')),
+            ('top_apps', tr('history.top_apps'))
         ])
         self.set_active_button('weekday')
+        
+        # Add secondary toggle row for Top Apps sub-mode
+        self.sub_toggle_frame = QFrame()
+        self.sub_toggle_layout = QHBoxLayout(self.sub_toggle_frame)
+        self.sub_toggle_layout.setContentsMargins(0, 5, 0, 0)
+        self.sub_toggle_layout.setSpacing(5)
+        
+        self.btn_top_weekday = QPushButton(tr('history.weekday'))
+        self.btn_top_weekday.setCheckable(True)
+        self.btn_top_weekday.setChecked(True)
+        self.btn_top_weekday.setStyleSheet(BTN_STYLE_BAR)
+        self.btn_top_weekday.clicked.connect(lambda: self.set_top_apps_submode('weekday'))
+        
+        self.btn_top_hourly = QPushButton(tr('history.hourly'))
+        self.btn_top_hourly.setCheckable(True)
+        self.btn_top_hourly.setStyleSheet(BTN_STYLE_BAR)
+        self.btn_top_hourly.clicked.connect(lambda: self.set_top_apps_submode('hourly'))
+        
+        self.sub_toggle_layout.addWidget(self.btn_top_weekday)
+        self.sub_toggle_layout.addWidget(self.btn_top_hourly)
+        self.sub_toggle_layout.addStretch()
+        
+        # Insert sub-toggle after header
+        self.layout.insertWidget(1, self.sub_toggle_frame)
+        self.sub_toggle_frame.hide()  # Hidden by default
+        
+    def set_top_apps_submode(self, mode):
+        self.top_apps_submode = mode
+        self.btn_top_weekday.setChecked(mode == 'weekday')
+        self.btn_top_hourly.setChecked(mode == 'hourly')
+        self.refresh()
         
     def on_mode_changed(self, key):
         self.current_mode = key
         self.set_active_button(key)
+        # Show/hide sub-toggle based on mode
+        self.sub_toggle_frame.setVisible(key == 'top_apps')
         self.refresh()
         
     def update_filter(self, app_name):
@@ -284,8 +319,13 @@ class InsightWidget(BaseChartWidget):
         
         if self.current_mode == 'weekday':
             self.plot_weekday(ax)
-        else:
+        elif self.current_mode == 'hour':
             self.plot_hourly(ax)
+        elif self.current_mode == 'top_apps':
+            if self.top_apps_submode == 'weekday':
+                self.plot_top_apps_weekday(ax)
+            else:
+                self.plot_top_apps_hourly(ax)
             
         self.canvas.draw()
         
@@ -339,6 +379,114 @@ class InsightWidget(BaseChartWidget):
         self.set_common_style(ax, tr('history.chart.hourly'))
         ax.set_xticks(hours[::2])
         ax.legend()
+
+    def plot_top_apps_weekday(self, ax):
+        """Plot most used app for each weekday."""
+        import numpy as np
+        
+        data = self.db.get_top_app_by_weekday()
+        labels = tr_list('history.weekdays')
+        
+        if not data:
+            ax.text(0.5, 0.5, tr('history.no_data'), ha='center', va='center', 
+                    color='gray', fontsize=14, transform=ax.transAxes)
+            ax.set_facecolor('#1e1e1e')
+            return
+        
+        # Get metadata for friendly names
+        metadata = self.db.get_app_metadata_dict()
+        
+        # Build data for all 7 days (Mon=0 to Sun=6)
+        data_map = {r[0]: r for r in data}  # weekday_idx -> (idx, app_name, activity)
+        
+        # Collect unique apps to assign colors
+        unique_apps = list(set(r[1] for r in data))
+        color_palette = ['#00e676', '#2196f3', '#ff9800', '#e91e63', '#9c27b0', '#00bcd4', '#ffeb3b']
+        app_colors = {app: color_palette[i % len(color_palette)] for i, app in enumerate(unique_apps)}
+        
+        x = np.arange(len(labels))
+        activities = []
+        bar_colors = []
+        app_labels = []
+        
+        for idx in range(7):
+            if idx in data_map:
+                _, app_name, activity = data_map[idx]
+                activities.append(activity or 0)
+                bar_colors.append(app_colors[app_name])
+                # Get friendly name if available
+                friendly = metadata.get(app_name, {}).get('friendly_name') or app_name
+                app_labels.append(friendly)
+            else:
+                activities.append(0)
+                bar_colors.append('#555555')
+                app_labels.append('')
+        
+        bars = ax.bar(x, activities, color=bar_colors, alpha=0.8)
+        
+        # Add app name labels on bars
+        for i, (bar, label) in enumerate(zip(bars, app_labels)):
+            if label and bar.get_height() > 0:
+                # Truncate long names
+                display_label = label[:12] + '...' if len(label) > 12 else label
+                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(activities)*0.02,
+                       display_label, ha='center', va='bottom', fontsize=8, color='#dddddd',
+                       rotation=45)
+        
+        self.set_common_style(ax, tr('history.chart.top_apps_weekday'))
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_ylabel(tr('history.legend.activity'))
+
+    def plot_top_apps_hourly(self, ax):
+        """Plot most used app for each hour of day."""
+        import numpy as np
+        
+        data = self.db.get_top_app_by_hour()
+        
+        if not data:
+            ax.text(0.5, 0.5, tr('history.no_data'), ha='center', va='center', 
+                    color='gray', fontsize=14, transform=ax.transAxes)
+            ax.set_facecolor('#1e1e1e')
+            return
+        
+        # Get metadata for friendly names
+        metadata = self.db.get_app_metadata_dict()
+        
+        # Build data for all 24 hours
+        data_map = {r[0]: r for r in data}  # hour -> (hour, app_name, activity)
+        
+        # Collect unique apps to assign colors
+        unique_apps = list(set(r[1] for r in data))
+        color_palette = ['#00e676', '#2196f3', '#ff9800', '#e91e63', '#9c27b0', '#00bcd4', '#ffeb3b']
+        app_colors = {app: color_palette[i % len(color_palette)] for i, app in enumerate(unique_apps)}
+        
+        hours = list(range(24))
+        activities = []
+        bar_colors = []
+        
+        for h in hours:
+            if h in data_map:
+                _, app_name, activity = data_map[h]
+                activities.append(activity or 0)
+                bar_colors.append(app_colors[app_name])
+            else:
+                activities.append(0)
+                bar_colors.append('#555555')
+        
+        ax.bar(hours, activities, color=bar_colors, alpha=0.8)
+        
+        # Build legend for unique apps
+        from matplotlib.patches import Patch
+        legend_elements = [Patch(facecolor=app_colors[app], alpha=0.8, 
+                                label=metadata.get(app, {}).get('friendly_name') or app[:15])
+                         for app in unique_apps]
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
+        
+        self.set_common_style(ax, tr('history.chart.top_apps_hourly'))
+        ax.set_xticks(hours[::2])
+        ax.set_xlabel('Hour')
+        ax.set_ylabel(tr('history.legend.activity'))
 
 class HistoryChartWidget(QWidget):
     """Main History Widget with Filter and Sub-charts."""
