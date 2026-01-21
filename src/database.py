@@ -534,15 +534,23 @@ class Database:
     def get_top_app_by_weekday(self):
         """Get the most used application for each day of week.
         
-        Returns list of (weekday_idx, app_name, total_activity) where weekday_idx is 0-6 (Mon-Sun).
+        Returns list of (weekday_idx, app_name, avg_activity) where weekday_idx is 0-6 (Mon-Sun).
         Only returns entries for weekdays that have data.
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             # SQLite %w: 0=Sunday, 1=Monday, ..., 6=Saturday
             # We want to return 0=Monday, so we transform: (dow + 6) % 7
+            # Calculate average by dividing total by GLOBAL count of distinct dates for that weekday
             cursor.execute('''
-                WITH app_dow_totals AS (
+                WITH global_dow_counts AS (
+                    SELECT 
+                        CAST(strftime('%w', date) AS INTEGER) as dow, 
+                        COUNT(DISTINCT date) as total_days_for_dow
+                    FROM daily_stats
+                    GROUP BY dow
+                ),
+                app_dow_totals AS (
                     SELECT 
                         CAST(strftime('%w', date) AS INTEGER) as sqlite_dow,
                         app_name,
@@ -552,13 +560,14 @@ class Database:
                 ),
                 ranked AS (
                     SELECT 
-                        (sqlite_dow + 6) % 7 as weekday_idx,
-                        app_name,
-                        total_activity,
-                        ROW_NUMBER() OVER (PARTITION BY sqlite_dow ORDER BY total_activity DESC) as rn
-                    FROM app_dow_totals
+                        (a.sqlite_dow + 6) % 7 as weekday_idx,
+                        a.app_name,
+                        (a.total_activity * 1.0 / g.total_days_for_dow) as avg_activity,
+                        ROW_NUMBER() OVER (PARTITION BY a.sqlite_dow ORDER BY (a.total_activity * 1.0 / g.total_days_for_dow) DESC) as rn
+                    FROM app_dow_totals a
+                    JOIN global_dow_counts g ON a.sqlite_dow = g.dow
                 )
-                SELECT weekday_idx, app_name, total_activity
+                SELECT weekday_idx, app_name, avg_activity
                 FROM ranked
                 WHERE rn = 1
                 ORDER BY weekday_idx
@@ -568,13 +577,17 @@ class Database:
     def get_top_app_by_hour(self):
         """Get the most used application for each hour of day.
         
-        Returns list of (hour, app_name, total_activity) for hours 0-23.
+        Returns list of (hour, app_name, avg_activity) for hours 0-23.
         Only returns entries for hours that have data.
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            # Calculate average by dividing total by GLOBAL count of distinct dates
             cursor.execute('''
-                WITH app_hour_totals AS (
+                WITH global_days AS (
+                    SELECT COUNT(DISTINCT date) as total_days_count FROM daily_stats
+                ),
+                app_hour_totals AS (
                     SELECT 
                         hour,
                         app_name,
@@ -584,13 +597,14 @@ class Database:
                 ),
                 ranked AS (
                     SELECT 
-                        hour,
-                        app_name,
-                        total_activity,
-                        ROW_NUMBER() OVER (PARTITION BY hour ORDER BY total_activity DESC) as rn
-                    FROM app_hour_totals
+                        a.hour,
+                        a.app_name,
+                        (a.total_activity * 1.0 / g.total_days_count) as avg_activity,
+                        ROW_NUMBER() OVER (PARTITION BY a.hour ORDER BY (a.total_activity * 1.0 / g.total_days_count) DESC) as rn
+                    FROM app_hour_totals a
+                    CROSS JOIN global_days g
                 )
-                SELECT hour, app_name, total_activity
+                SELECT hour, app_name, avg_activity
                 FROM ranked
                 WHERE rn = 1
                 ORDER BY hour

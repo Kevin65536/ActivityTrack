@@ -481,7 +481,8 @@ class InsightWidget(BaseChartWidget):
         legend_elements = [Patch(facecolor=app_colors[app], alpha=0.8, 
                                 label=metadata.get(app, {}).get('friendly_name') or app[:15])
                          for app in unique_apps]
-        ax.legend(handles=legend_elements, loc='upper right', fontsize=8)
+        ax.legend(handles=legend_elements, loc='upper right', fontsize=8,
+                 framealpha=0.7, facecolor='#2d2d2d')
         
         self.set_common_style(ax, tr('history.chart.top_apps_hourly'))
         ax.set_xticks(hours[::2])
