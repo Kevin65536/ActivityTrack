@@ -2,10 +2,13 @@ import sqlite3
 import datetime
 import os
 import sys
+import threading
 
 class Database:
     def __init__(self, db_path="tracker.db"):
         self.db_path = self._resolve_db_path(db_path)
+        self._conn = None
+        self._lock = threading.RLock()
         self.init_db()
 
     def _resolve_db_path(self, db_path):
@@ -23,10 +26,32 @@ class Database:
         return os.path.join(base_dir, db_path)
 
     def get_connection(self):
-        return sqlite3.connect(self.db_path)
+        """Return the persistent connection, creating it if needed.
+
+        The connection uses WAL journal mode for better concurrency and
+        is shared across all calls.  A threading lock serialises access
+        so the single connection is safe to use from multiple threads.
+        """
+        if self._conn is None:
+            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            # WAL mode allows readers and one writer concurrently and is
+            # far more resilient to corruption than the default rollback journal.
+            self._conn.execute('PRAGMA journal_mode=WAL')
+            self._conn.execute('PRAGMA busy_timeout=5000')
+        return self._conn
+
+    def close(self):
+        """Explicitly close the persistent connection."""
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
 
     def init_db(self):
-        with self.get_connection() as conn:
+        conn = self.get_connection()
+        with self._lock:
             cursor = conn.cursor()
             
             # Daily stats table
@@ -94,10 +119,13 @@ class Database:
                 )
             ''')
             conn.commit()
+
+        # Migration for new columns in app_stats
+        self._migrate_app_stats_schema()
             
-            # Migration for new columns in app_stats
-            self._migrate_app_stats_schema()
-            
+        with self._lock:
+            cursor = conn.cursor()
+
             # Hourly App Stats table for granular tracking
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS hourly_app_stats (
@@ -111,10 +139,10 @@ class Database:
                     PRIMARY KEY (date, hour, app_name)
                 )
             ''')
-            
+
             # Ensure app_metadata table exists
             self._migrate_app_metadata_schema()
-            
+
             # App foreground time table for screen time tracking
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS app_foreground_time (
@@ -125,12 +153,13 @@ class Database:
                     PRIMARY KEY (date, hour, app_name)
                 )
             ''')
-            
+
             conn.commit()
 
     def _migrate_app_stats_schema(self):
         """Add new columns to app_stats if they don't exist."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             try:
                 # Check if columns exist
@@ -148,7 +177,8 @@ class Database:
                 print(f"Migration warning: {e}")
 
     def update_stats(self, date, key_count=0, click_count=0, distance=0.0, scroll=0.0):
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO daily_stats (date, key_count, mouse_click_count, mouse_distance, scroll_distance)
@@ -162,7 +192,8 @@ class Database:
             conn.commit()
 
     def update_app_stats(self, date, app_name, key_count=0, click_count=0, scroll_count=0, distance=0):
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO app_stats (date, app_name, key_count, clicks, scrolls, distance)
@@ -176,7 +207,8 @@ class Database:
             conn.commit()
 
     def update_hourly_app_stats(self, date, hour, app_name, key_count=0, clicks=0, scrolls=0, distance=0.0):
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO hourly_app_stats (date, hour, app_name, key_count, clicks, scrolls, distance)
@@ -190,7 +222,8 @@ class Database:
             conn.commit()
 
     def update_heatmap(self, date, key_code, count):
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO heatmap_data (date, key_code, count)
@@ -202,7 +235,8 @@ class Database:
             conn.commit()
 
     def update_mouse_heatmap(self, date, x, y, count):
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO mouse_heatmap_data (date, x, y, count)
@@ -214,7 +248,8 @@ class Database:
 
     def update_app_heatmap(self, date, app_name, key_code, count):
         """Update app-specific keyboard heatmap data."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO app_heatmap_data (date, app_name, key_code, count)
@@ -226,7 +261,8 @@ class Database:
 
     def update_app_mouse_heatmap(self, date, app_name, x, y, count):
         """Update app-specific mouse heatmap data."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO app_mouse_heatmap_data (date, app_name, x, y, count)
@@ -238,7 +274,8 @@ class Database:
 
     def get_today_stats(self):
         today = datetime.date.today()
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT * FROM daily_stats WHERE date = ?', (today,))
             return cursor.fetchone()
@@ -246,7 +283,8 @@ class Database:
     def get_weekly_stats(self):
         today = datetime.date.today()
         start_date = today - datetime.timedelta(days=6)
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT date, key_count FROM daily_stats WHERE date BETWEEN ? AND ? ORDER BY date', (start_date, today))
             return cursor.fetchall()
@@ -254,7 +292,8 @@ class Database:
     def get_today_heatmap(self):
         """Get today's keyboard heatmap data from database."""
         today = datetime.date.today()
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT key_code, count FROM heatmap_data WHERE date = ?', (today,))
             rows = cursor.fetchall()
@@ -262,7 +301,8 @@ class Database:
 
     def get_heatmap_range(self, start_date, end_date, app_filter=None):
         """Get aggregated heatmap data for a date range, optionally filtered by app."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if app_filter and app_filter != "All Applications":
                 cursor.execute('''
@@ -284,14 +324,16 @@ class Database:
     def get_today_mouse_heatmap(self):
         """Get today's mouse heatmap data from database."""
         today = datetime.date.today()
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('SELECT x, y, count FROM mouse_heatmap_data WHERE date = ?', (today,))
             return cursor.fetchall()
 
     def get_mouse_heatmap_range(self, start_date, end_date, app_filter=None):
         """Get aggregated mouse heatmap data for a date range, optionally filtered by app."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if app_filter and app_filter != "All Applications":
                 cursor.execute('''
@@ -311,7 +353,8 @@ class Database:
 
     def get_stats_range(self, start_date, end_date):
         """Get aggregated stats for a date range."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT 
@@ -338,7 +381,8 @@ class Database:
 
     def get_all_time_stats(self):
         """Get all-time aggregated statistics."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT 
@@ -355,7 +399,8 @@ class Database:
 
     def get_top_apps(self, limit=10, start_date=None, end_date=None):
         """Get top applications by keystroke count within a date range."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if start_date and end_date:
                 cursor.execute('''
@@ -378,7 +423,8 @@ class Database:
 
     def get_app_stats_summary(self, limit=50, start_date=None, end_date=None):
         """Get detailed app stats within a date range."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if start_date and end_date:
                 cursor.execute('''
@@ -412,7 +458,8 @@ class Database:
 
     def get_daily_history(self, start_date=None, end_date=None, app_filter=None):
         """Get daily statistics for trend charts. Returns list of (date, keys, clicks, distance, scroll)."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             
             if app_filter and app_filter != "All Applications":
@@ -451,7 +498,8 @@ class Database:
     def get_today_hourly_stats(self, app_filter=None):
         """Get today's hourly stats: [(hour, keys, clicks), ...]"""
         today = datetime.date.today()
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if app_filter and app_filter != "All Applications":
                 cursor.execute('''
@@ -474,7 +522,8 @@ class Database:
     def get_day_of_week_averages(self, app_filter=None):
         """Get average stats per day of week (0=Sunday, 6=Saturday in SQLite strftime %w)."""
         # Note: SQLite %w returns 0-6 where 0 is Sunday.
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if app_filter and app_filter != "All Applications":
                 # Average per day for specific app involves summing for each date then averaging by DOW
@@ -503,7 +552,8 @@ class Database:
 
     def get_hour_of_day_averages(self, app_filter=None):
         """Get average stats per hour of day over history."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if app_filter and app_filter != "All Applications":
                 cursor.execute('''
@@ -537,7 +587,8 @@ class Database:
         Returns list of (weekday_idx, app_name, avg_activity) where weekday_idx is 0-6 (Mon-Sun).
         Only returns entries for weekdays that have data.
         """
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             # SQLite %w: 0=Sunday, 1=Monday, ..., 6=Saturday
             # We want to return 0=Monday, so we transform: (dow + 6) % 7
@@ -580,7 +631,8 @@ class Database:
         Returns list of (hour, app_name, avg_activity) for hours 0-23.
         Only returns entries for hours that have data.
         """
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             # Calculate average by dividing total by GLOBAL count of distinct dates
             cursor.execute('''
@@ -613,7 +665,8 @@ class Database:
 
     def get_all_apps(self):
         """Get list of all unique app names for dropdown."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             # Try to return friendly names if available, else app_name
             # But grouping is by app_name. UI can look up friendly name.
@@ -626,7 +679,8 @@ class Database:
         if start_date is None or end_date is None:
             return self.get_all_apps()
             
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT DISTINCT app_name 
@@ -637,7 +691,8 @@ class Database:
             return [row[0] for row in cursor.fetchall()]
 
     def _migrate_app_metadata_schema(self):
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS app_metadata (
@@ -656,7 +711,8 @@ class Database:
         # Let's add it to init_db actually, but since I am editing here...
         # I'll rely on init_db calling it if I add it there, or just call it.
         # Let's just execute the create if not exists here to be safe for this patch.
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS app_metadata (
@@ -676,7 +732,8 @@ class Database:
 
     def get_app_metadata_dict(self):
         """Return dict {app_name: {'friendly_name': ..., 'exe_path': ...}}."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             # Check table exists first
             try:
@@ -690,7 +747,8 @@ class Database:
     
     def update_foreground_time(self, date, hour, app_name, duration_seconds):
         """Update app foreground time for a specific date and hour."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO app_foreground_time (date, hour, app_name, duration_seconds)
@@ -702,7 +760,8 @@ class Database:
 
     def get_foreground_time_by_app(self, start_date, end_date):
         """Get total foreground time per app within date range. Returns list of (app_name, total_seconds)."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT app_name, SUM(duration_seconds) as total_seconds
@@ -715,7 +774,8 @@ class Database:
 
     def get_foreground_time_hourly(self, date, app_filter=None):
         """Get hourly foreground time for a specific date. Returns list of (hour, total_seconds)."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if app_filter and app_filter != "All Applications":
                 cursor.execute('''
@@ -737,7 +797,8 @@ class Database:
 
     def get_foreground_time_daily(self, start_date, end_date, app_filter=None):
         """Get daily foreground time for date range. Returns list of (date, total_seconds)."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if app_filter and app_filter != "All Applications":
                 cursor.execute('''
@@ -759,7 +820,8 @@ class Database:
 
     def get_total_foreground_time(self, start_date, end_date, app_filter=None):
         """Get total foreground time for date range in seconds."""
-        with self.get_connection() as conn:
+        with self._lock:
+            conn = self.get_connection()
             cursor = conn.cursor()
             if app_filter and app_filter != "All Applications":
                 cursor.execute('''

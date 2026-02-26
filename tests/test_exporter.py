@@ -44,6 +44,10 @@ class TestDataExporter(unittest.TestCase):
     def tearDownClass(cls):
         """Clean up test database."""
         try:
+            cls.db.close()
+        except Exception:
+            pass
+        try:
             os.remove(cls.db_path)
         except Exception:
             pass
@@ -370,6 +374,7 @@ class TestDataExporter(unittest.TestCase):
             # Should have header only
             self.assertEqual(len(rows), 1)
         finally:
+            empty_db.close()
             os.remove(empty_db_path)
     
     def test_export_json_empty_database(self):
@@ -393,6 +398,7 @@ class TestDataExporter(unittest.TestCase):
             self.assertEqual(len(data['keyboard_heatmap']), 0)
             self.assertEqual(len(data['screen_time']), 0)
         finally:
+            empty_db.close()
             os.remove(empty_db_path)
 
 
@@ -430,6 +436,7 @@ class TestExporterIntegration(unittest.TestCase):
                     rows = list(reader)
                 self.assertEqual(len(rows), 31)  # 30 days + header
         finally:
+            db.close()
             os.remove(db_path)
     
     def test_unicode_app_names(self):
@@ -467,6 +474,7 @@ class TestExporterIntegration(unittest.TestCase):
                 app_names = [app['app_name'] for app in data['app_stats']]
                 self.assertIn("中文应用.exe", app_names)
         finally:
+            db.close()
             os.remove(db_path)
 
 

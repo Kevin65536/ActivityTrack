@@ -2,6 +2,7 @@ import threading
 import time
 import os
 import math
+import logging
 import ctypes
 from ctypes import wintypes
 import win32gui
@@ -13,6 +14,8 @@ from .database import Database
 from .screen_time import split_interval_by_local_hour
 import datetime
 from collections import defaultdict
+
+logger = logging.getLogger(__name__)
 
 # Ctypes definitions
 user32 = ctypes.windll.user32
@@ -67,16 +70,14 @@ class ActivityTrack:
         self.running = False
         
         # Buffers - use thread-safe access
-        self.key_buffer = 0
-        self.click_buffer = 0
-        self.distance_buffer = 0.0  # Now in meters
-        self.scroll_buffer = 0.0
-        self.scroll_buffer = 0.0
-        self.app_stats_buffer = {}  # {app_name: {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0}}
-        self.heatmap_buffer = {}
-        self.mouse_heatmap_buffer = {}
-        self.app_heatmap_buffer = {}  # {app_name: {key_code: count}}
-        self.app_mouse_heatmap_buffer = {}  # {app_name: {(x, y): count}}
+        # Input buffers are keyed by (date, hour) so that data is always
+        # attributed to the correct period even if flushing is delayed.
+        self.hourly_input_buffer = {}  # {(date, hour): {keys, clicks, distance, scroll}}
+        self.hourly_app_stats_buffer = {}  # {(date, hour, app_name): {keys, clicks, scrolls, distance}}
+        self.heatmap_buffer = {}  # {(date, key_code): count}
+        self.mouse_heatmap_buffer = {}  # {(date, x, y): count}
+        self.app_heatmap_buffer = {}  # {(date, app_name, key_code): count}
+        self.app_mouse_heatmap_buffer = {}  # {(date, app_name, x, y): count}
         
         # Screen time tracking
         # Buffer by (date, hour, app_name) to avoid dumping long spans into a single hour.
@@ -248,6 +249,11 @@ class ActivityTrack:
         # Flush remaining foreground time
         self._record_foreground_time()
         self.flush_stats()
+        # Close the database connection
+        try:
+            self.db.close()
+        except Exception:
+            pass
 
     def foreground_track_loop(self):
         """Track foreground window changes every second."""
@@ -381,46 +387,72 @@ class ActivityTrack:
     def get_stats_snapshot(self):
         """Get a thread-safe snapshot of current buffers + DB stats."""
         with self.lock:
+            today = datetime.date.today()
+
+            # Sum today's buffered input data
+            buffer_keys = 0
+            buffer_clicks = 0
+            buffer_distance = 0.0
+            buffer_scroll = 0.0
+            for (date_part, hour_part), stats in self.hourly_input_buffer.items():
+                if date_part == today:
+                    buffer_keys += stats['keys']
+                    buffer_clicks += stats['clicks']
+                    buffer_distance += stats['distance']
+                    buffer_scroll += stats['scroll']
+
             db_stats = self.db.get_today_stats()
             if db_stats:
                 # db_stats: date, key_count, mouse_click_count, mouse_distance, scroll_distance
-                keys = db_stats[1] + self.key_buffer
-                clicks = db_stats[2] + self.click_buffer
-                distance = db_stats[3] + self.distance_buffer
-                scroll = db_stats[4] + self.scroll_buffer
+                keys = db_stats[1] + buffer_keys
+                clicks = db_stats[2] + buffer_clicks
+                distance = db_stats[3] + buffer_distance
+                scroll = db_stats[4] + buffer_scroll
             else:
-                keys = self.key_buffer
-                clicks = self.click_buffer
-                distance = self.distance_buffer
-                scroll = self.scroll_buffer
-            
+                keys = buffer_keys
+                clicks = buffer_clicks
+                distance = buffer_distance
+                scroll = buffer_scroll
+
             # Merge DB heatmap with current buffer
-            # First get today's data from DB
             db_heatmap = self.db.get_today_heatmap()
-            
-            # Then merge with current buffer (buffer contains increments not yet flushed)
             merged_heatmap = dict(db_heatmap)
-            for key_code, count in self.heatmap_buffer.items():
-                merged_heatmap[key_code] = merged_heatmap.get(key_code, 0) + count
-            
-            # Also capture raw buffer values for live updates
-            buffer_keys = self.key_buffer
-            buffer_clicks = self.click_buffer
-            buffer_distance = self.distance_buffer
-            buffer_scroll = self.scroll_buffer
-            buffer_heatmap = dict(self.heatmap_buffer)
-            
-            # Copy app-specific heatmap buffers
-            app_heatmap_buffer_copy = {app: dict(keys) for app, keys in self.app_heatmap_buffer.items()}
-            app_mouse_heatmap_buffer_copy = {app: dict(pos) for app, pos in self.app_mouse_heatmap_buffer.items()}
-            
+            for (date_part, key_code), count in self.heatmap_buffer.items():
+                if date_part == today:
+                    merged_heatmap[key_code] = merged_heatmap.get(key_code, 0) + count
+
+            # Build buffer-only heatmap for live updates
+            buffer_heatmap = {}
+            for (date_part, key_code), count in self.heatmap_buffer.items():
+                if date_part == today:
+                    buffer_heatmap[key_code] = buffer_heatmap.get(key_code, 0) + count
+
+            # Build buffer-only mouse heatmap for live updates
+            buffer_mouse_heatmap = {}
+            for (date_part, bx, by), count in self.mouse_heatmap_buffer.items():
+                if date_part == today:
+                    buffer_mouse_heatmap[(bx, by)] = buffer_mouse_heatmap.get((bx, by), 0) + count
+
+            # Copy app-specific heatmap buffers (today only)
+            app_heatmap_buffer_copy = {}
+            for (date_part, app_name, key_code), count in self.app_heatmap_buffer.items():
+                if date_part == today:
+                    app_heatmap_buffer_copy.setdefault(app_name, {})[key_code] = \
+                        app_heatmap_buffer_copy.get(app_name, {}).get(key_code, 0) + count
+
+            app_mouse_heatmap_buffer_copy = {}
+            for (date_part, app_name, bx, by), count in self.app_mouse_heatmap_buffer.items():
+                if date_part == today:
+                    app_mouse_heatmap_buffer_copy.setdefault(app_name, {})[(bx, by)] = \
+                        app_mouse_heatmap_buffer_copy.get(app_name, {}).get((bx, by), 0) + count
+
         return {
             'keys': keys,
             'clicks': clicks,
             'distance': distance,
             'scroll': scroll,
             'heatmap': merged_heatmap,
-            'mouse_heatmap': dict(self.mouse_heatmap_buffer),
+            'mouse_heatmap': buffer_mouse_heatmap,
             # Buffer-only values for live updates
             'buffer_keys': buffer_keys,
             'buffer_clicks': buffer_clicks,
@@ -603,24 +635,33 @@ class ActivityTrack:
         user32.UnhookWindowsHookEx(self.keyboard_hook)
         user32.UnhookWindowsHookEx(self.mouse_hook)
 
+    def _current_date_hour(self):
+        """Return (date, hour) for the current moment."""
+        now = datetime.datetime.now()
+        return now.date(), now.hour
+
     def on_press(self, vk_code, scan_code):
         self._update_activity_time()  # Update last activity for idle detection
         with self.lock:
-            self.key_buffer += 1
-            
+            dh = self._current_date_hour()
+
+            # Global daily + hourly input stats
+            buf = self.hourly_input_buffer.setdefault(dh, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
+            buf['keys'] += 1
+
             # App stats
             app_name = self.get_active_app_name()
-            if app_name not in self.app_stats_buffer:
-                self.app_stats_buffer[app_name] = {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0}
-            self.app_stats_buffer[app_name]['keys'] += 1
-            
+            app_key = (*dh, app_name)
+            app_buf = self.hourly_app_stats_buffer.setdefault(app_key, {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0})
+            app_buf['keys'] += 1
+
             # Heatmap stats (global)
-            self.heatmap_buffer[scan_code] = self.heatmap_buffer.get(scan_code, 0) + 1
-            
+            hm_key = (dh[0], scan_code)
+            self.heatmap_buffer[hm_key] = self.heatmap_buffer.get(hm_key, 0) + 1
+
             # App-specific heatmap
-            if app_name not in self.app_heatmap_buffer:
-                self.app_heatmap_buffer[app_name] = {}
-            self.app_heatmap_buffer[app_name][scan_code] = self.app_heatmap_buffer[app_name].get(scan_code, 0) + 1
+            ahm_key = (dh[0], app_name, scan_code)
+            self.app_heatmap_buffer[ahm_key] = self.app_heatmap_buffer.get(ahm_key, 0) + 1
 
     def on_move(self, x, y):
         self._update_activity_time()  # Update last activity for idle detection
@@ -629,135 +670,150 @@ class ActivityTrack:
             dx = x - self.last_mouse_pos[0]
             dy = y - self.last_mouse_pos[1]
             dist_px = math.sqrt(dx * dx + dy * dy)
-            
+
             # Convert pixels to meters:
             # dist_px / px_per_mm = distance in mm
             # distance in mm / 1000 = distance in meters
             dist_meters = dist_px / self.px_per_mm / 1000.0
-            
+
             with self.lock:
-                self.distance_buffer += dist_meters
-                
+                dh = self._current_date_hour()
+                buf = self.hourly_input_buffer.setdefault(dh, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
+                buf['distance'] += dist_meters
+
                 # Update app distance (throttled check for active app)
                 now = time.time()
-                if now - self.last_app_check > 0.5: # Check active app every 500ms
+                if now - self.last_app_check > 0.5:  # Check active app every 500ms
                     self.cached_app_name = self.get_active_app_name()
                     self.last_app_check = now
-                
+
                 app = self.cached_app_name
-                if app not in self.app_stats_buffer:
-                    self.app_stats_buffer[app] = {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0}
-                self.app_stats_buffer[app]['distance'] += dist_meters
+                app_key = (*dh, app)
+                app_buf = self.hourly_app_stats_buffer.setdefault(app_key, {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0})
+                app_buf['distance'] += dist_meters
         self.last_mouse_pos = (x, y)
 
     def on_click(self, x=0, y=0):
         self._update_activity_time()  # Update last activity for idle detection
         with self.lock:
-            self.click_buffer += 1
-            
+            dh = self._current_date_hour()
+            buf = self.hourly_input_buffer.setdefault(dh, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
+            buf['clicks'] += 1
+
             # App stats
             app = self.get_active_app_name()
-            if app not in self.app_stats_buffer:
-                self.app_stats_buffer[app] = {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0}
-            self.app_stats_buffer[app]['clicks'] += 1
-            
+            app_key = (*dh, app)
+            app_buf = self.hourly_app_stats_buffer.setdefault(app_key, {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0})
+            app_buf['clicks'] += 1
+
             # Track mouse heatmap (x, y) - global
             # Bin to 5x5 pixels
             bx = (x // 5) * 5
             by = (y // 5) * 5
-            self.mouse_heatmap_buffer[(bx, by)] = self.mouse_heatmap_buffer.get((bx, by), 0) + 1
-            
+            mhm_key = (dh[0], bx, by)
+            self.mouse_heatmap_buffer[mhm_key] = self.mouse_heatmap_buffer.get(mhm_key, 0) + 1
+
             # App-specific mouse heatmap
-            if app not in self.app_mouse_heatmap_buffer:
-                self.app_mouse_heatmap_buffer[app] = {}
-            self.app_mouse_heatmap_buffer[app][(bx, by)] = self.app_mouse_heatmap_buffer[app].get((bx, by), 0) + 1
+            amhm_key = (dh[0], app, bx, by)
+            self.app_mouse_heatmap_buffer[amhm_key] = self.app_mouse_heatmap_buffer.get(amhm_key, 0) + 1
 
     def on_scroll(self, delta):
         self._update_activity_time()  # Update last activity for idle detection
         with self.lock:
-            self.scroll_buffer += abs(delta) / 120.0
-            
+            dh = self._current_date_hour()
+            buf = self.hourly_input_buffer.setdefault(dh, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
+            buf['scroll'] += abs(delta) / 120.0
+
             # App stats
             app = self.get_active_app_name()
-            if app not in self.app_stats_buffer:
-                self.app_stats_buffer[app] = {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0}
-            self.app_stats_buffer[app]['scrolls'] += 1
+            app_key = (*dh, app)
+            app_buf = self.hourly_app_stats_buffer.setdefault(app_key, {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0})
+            app_buf['scrolls'] += 1
 
     def flush_loop(self):
         while self.running:
             time.sleep(5)
-            self._record_foreground_time()  # Record current foreground time before flush
-            self.flush_stats()
+            try:
+                self._record_foreground_time()  # Record current foreground time before flush
+                self.flush_stats()
+            except Exception:
+                # CRITICAL: Never let the flush thread die.
+                # A dead flush thread causes all data to accumulate in memory
+                # and eventually be lost or attributed to the wrong date.
+                logger.exception("Error in flush_loop iteration")
 
     def flush_stats(self):
         with self.lock:
-            has_input = (self.key_buffer > 0 or self.click_buffer > 0 or 
-                         self.distance_buffer > 0 or self.scroll_buffer > 0)
-            
+            has_input = bool(self.hourly_input_buffer)
+
             # Check if foreground time buffer has any non-zero values
             has_time = any(s > 0 for s in self.foreground_time_buffer.values())
 
             if not has_input and not has_time:
                 return
 
-            today = datetime.date.today()
-            current_hour = datetime.datetime.now().hour
-            
             if has_input:
-                self.db.update_stats(
-                    today, 
-                    self.key_buffer, 
-                    self.click_buffer, 
-                    self.distance_buffer, 
-                    self.scroll_buffer
-                )
-                
-                for app, stats in self.app_stats_buffer.items():
-                    self.db.update_app_stats(today, app, 
-                        key_count=stats['keys'], 
+                # Aggregate per-date totals for daily_stats
+                daily_totals = {}  # {date: {keys, clicks, distance, scroll}}
+                for (date_part, hour_part), stats in self.hourly_input_buffer.items():
+                    dt = daily_totals.setdefault(date_part, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
+                    dt['keys'] += stats['keys']
+                    dt['clicks'] += stats['clicks']
+                    dt['distance'] += stats['distance']
+                    dt['scroll'] += stats['scroll']
+
+                for date_part, dt in daily_totals.items():
+                    self.db.update_stats(
+                        date_part,
+                        dt['keys'],
+                        dt['clicks'],
+                        dt['distance'],
+                        dt['scroll']
+                    )
+
+                # Per-app hourly stats
+                for (date_part, hour_part, app_name), stats in self.hourly_app_stats_buffer.items():
+                    self.db.update_app_stats(date_part, app_name,
+                        key_count=stats['keys'],
                         click_count=stats['clicks'],
                         scroll_count=stats['scrolls'],
                         distance=stats['distance']
                     )
-                    
-                    # Granular hourly stats
-                    self.db.update_hourly_app_stats(today, current_hour, app,
-                        key_count=stats['keys'], 
+                    self.db.update_hourly_app_stats(date_part, hour_part, app_name,
+                        key_count=stats['keys'],
                         clicks=stats['clicks'],
                         scrolls=stats['scrolls'],
                         distance=stats['distance']
                     )
-                
-                for key_code, count in self.heatmap_buffer.items():
-                    self.db.update_heatmap(today, key_code, count)
-                    
-                for (x, y), count in self.mouse_heatmap_buffer.items():
-                    self.db.update_mouse_heatmap(today, x, y, count)
-                
-                # Flush app-specific heatmap data
-                for app_name, key_counts in self.app_heatmap_buffer.items():
-                    for key_code, count in key_counts.items():
-                        self.db.update_app_heatmap(today, app_name, key_code, count)
-                
-                for app_name, pos_counts in self.app_mouse_heatmap_buffer.items():
-                    for (x, y), count in pos_counts.items():
-                        self.db.update_app_mouse_heatmap(today, app_name, x, y, count)
+
+                # Heatmap data (keyed by (date, key_code))
+                for (date_part, key_code), count in self.heatmap_buffer.items():
+                    self.db.update_heatmap(date_part, key_code, count)
+
+                # Mouse heatmap (keyed by (date, x, y))
+                for (date_part, x, y), count in self.mouse_heatmap_buffer.items():
+                    self.db.update_mouse_heatmap(date_part, x, y, count)
+
+                # App-specific keyboard heatmap (keyed by (date, app, key_code))
+                for (date_part, app_name, key_code), count in self.app_heatmap_buffer.items():
+                    self.db.update_app_heatmap(date_part, app_name, key_code, count)
+
+                # App-specific mouse heatmap (keyed by (date, app, x, y))
+                for (date_part, app_name, x, y), count in self.app_mouse_heatmap_buffer.items():
+                    self.db.update_app_mouse_heatmap(date_part, app_name, x, y, count)
 
                 # Reset input buffers
-                self.key_buffer = 0
-                self.click_buffer = 0
-                self.distance_buffer = 0.0
-                self.scroll_buffer = 0.0
-                self.app_stats_buffer.clear()
+                self.hourly_input_buffer.clear()
+                self.hourly_app_stats_buffer.clear()
                 self.heatmap_buffer.clear()
                 self.mouse_heatmap_buffer.clear()
                 self.app_heatmap_buffer.clear()
                 self.app_mouse_heatmap_buffer.clear()
-            
+
             if has_time:
                 # Flush foreground time buffer
                 for (date_part, hour_part, app_name), seconds in self.foreground_time_buffer.items():
                     if seconds > 0:
                         self.db.update_foreground_time(date_part, hour_part, app_name, int(seconds))
-                
+
                 self.foreground_time_buffer.clear()

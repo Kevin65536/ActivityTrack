@@ -670,12 +670,19 @@ class MainWindow(QMainWindow):
                 
             # Add buffer ONLY if 'today' is selected
             if self.apps_time_selector.current_range == 'today':
-                buffer = self.tracker.app_stats_buffer # direct access or via snapshot?
-                # Prefer snapshot to be thread safe, but get_stats_snapshot doesn't return detailed app stats currently
-                # Let's add app_stats to get_stats_snapshot or access via lock.
-                # Accessing via lock is safer.
+                # Merge today's buffered app stats (date-hour keyed) into the table
                 with self.tracker.lock:
-                    buffer_snapshot = dict(self.tracker.app_stats_buffer) # Copy it
+                    today = __import__('datetime').date.today()
+                    buffer_snapshot = {}
+                    for (date_part, hour_part, app_name), data in self.tracker.hourly_app_stats_buffer.items():
+                        if date_part == today:
+                            if app_name not in buffer_snapshot:
+                                buffer_snapshot[app_name] = {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0}
+                            buf = buffer_snapshot[app_name]
+                            buf['keys'] += data.get('keys', 0)
+                            buf['clicks'] += data.get('clicks', 0)
+                            buf['scrolls'] += data.get('scrolls', 0)
+                            buf['distance'] += data.get('distance', 0.0)
                 
                 # Merge logic... this is tricky with list of tuples.
                 # Convert DB stats to dict for merging
