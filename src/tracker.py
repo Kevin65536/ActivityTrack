@@ -117,6 +117,10 @@ class ActivityTrack:
                 return
             if self._paused_reasons:
                 return
+            if self.retention_days != -1:
+                cutoff = datetime.date.today() - datetime.timedelta(days=self.retention_days - 1)
+                if datetime.datetime.fromtimestamp(event.wall_time).date() < cutoff:
+                    return
             name = self.get_active_app_name(event.hwnd)
             handlers = {'key': self.on_press, 'move': self.on_move,
                         'click': self.on_click, 'scroll': self.on_scroll}
@@ -520,6 +524,7 @@ class ActivityTrack:
                     if key[0] < cutoff:
                         del buffer[key]
             self.metadata_cache.clear()
+            self._metadata_pending.clear()
             self._last_retention_date = today
 
     def _init_screen_metrics(self):

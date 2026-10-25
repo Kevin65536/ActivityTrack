@@ -69,10 +69,11 @@ class SettingsWidget(QWidget):
     settings_changed = Signal()
     language_changed = Signal(str)
     
-    def __init__(self, config: Config = None, database=None):
+    def __init__(self, config: Config = None, database=None, tracker=None):
         super().__init__()
         self.config = config or Config()
         self.database = database
+        self.tracker = tracker
         self.exporter = DataExporter(database) if database else None
         self.setup_ui()
         self.load_settings()
@@ -318,7 +319,7 @@ class SettingsWidget(QWidget):
         retention_layout.addWidget(self.retention_label)
         
         self.retention_spin = QSpinBox()
-        self.retention_spin.setRange(-1, 3650)  # -1 = forever, up to 10 years
+        self.retention_spin.setRange(0, 3650)  # -1 = forever, up to 10 years
         self.retention_spin.setSpecialValueText(tr('settings.retention_forever'))
         self.retention_spin.setSuffix(tr('settings.retention_days'))
         self.retention_spin.setFixedWidth(120)
@@ -787,7 +788,7 @@ class SettingsWidget(QWidget):
         # Load values from config (trust config file, not registry)
         self.autostart_check.setChecked(self.config.autostart)
         self.minimize_tray_check.setChecked(self.config.minimize_to_tray)
-        self.retention_spin.setValue(self.config.data_retention_days)
+        self.retention_spin.setValue(max(0, self.config.data_retention_days))
         
         # Load idle timeout (convert seconds to minutes for display)
         idle_seconds = self.config.idle_timeout_seconds
@@ -882,7 +883,7 @@ class SettingsWidget(QWidget):
     
     def on_retention_changed(self, value):
         """Handle data retention spinbox change."""
-        self.config.data_retention_days = value
+        self.config.data_retention_days = value if value else -1
         self.settings_changed.emit()
     
     def on_idle_timeout_changed(self, value):
@@ -966,19 +967,11 @@ class SettingsWidget(QWidget):
         """Clear all data from database."""
         if self.database:
             try:
-                with self.database.get_connection() as conn:
-                    cursor = conn.cursor()
-                    # Clear all tables
-                    cursor.execute("DELETE FROM daily_stats")
-                    cursor.execute("DELETE FROM app_stats")
-                    cursor.execute("DELETE FROM heatmap_data")
-                    cursor.execute("DELETE FROM mouse_heatmap_data")
-                    cursor.execute("DELETE FROM app_heatmap_data")
-                    cursor.execute("DELETE FROM app_mouse_heatmap_data")
-                    cursor.execute("DELETE FROM hourly_app_stats")
-                    # Keep app_metadata as it's just friendly names
-                    conn.commit()
-                
+                if self.tracker:
+                    self.tracker.clear_all_data()
+                else:
+                    self.database.clear_all_data()
+
                 QMessageBox.information(
                     self,
                     tr('dialog.clear_data.success_title'),
@@ -1034,6 +1027,8 @@ class SettingsWidget(QWidget):
         if folder:
             try:
                 start_date, end_date = self._get_export_date_range()
+                if self.tracker:
+                    self.tracker.flush_stats()
                 results = self.exporter.export_all_csv(folder, start_date, end_date)
                 
                 if all(results.values()):
@@ -1080,6 +1075,8 @@ class SettingsWidget(QWidget):
         if filepath:
             try:
                 start_date, end_date = self._get_export_date_range()
+                if self.tracker:
+                    self.tracker.flush_stats()
                 success = self.exporter.export_json(filepath, start_date, end_date)
                 
                 if success:
@@ -1092,7 +1089,7 @@ class SettingsWidget(QWidget):
                     QMessageBox.warning(
                         self,
                         tr('dialog.export.error_title'),
-                        tr('dialog.export.error_message', error='Export failed')
+                        tr('dialog.export.error_message', error=self.exporter.last_error or 'Export failed')
                     )
             except Exception as e:
                 QMessageBox.critical(

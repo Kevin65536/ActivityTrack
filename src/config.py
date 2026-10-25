@@ -4,6 +4,9 @@ Handles persistent settings like autostart, data retention, and theme preference
 """
 
 import json
+import copy
+import logging
+from .fileio import atomic_text_file
 import os
 import sys
 import winreg
@@ -57,37 +60,80 @@ class Config:
         
         self.config_dir = config_dir
         self.config_path = os.path.join(config_dir, CONFIG_FILE)
-        self._config = dict(DEFAULT_CONFIG)
+        self._config = copy.deepcopy(DEFAULT_CONFIG)
+        self.load_error = None
         self.load()
     
+    @staticmethod
+    def _validate(key, value):
+        if key not in DEFAULT_CONFIG:
+            raise ValueError(f'Unknown setting: {key}')
+        default = DEFAULT_CONFIG[key]
+        if type(default) is bool:
+            valid = type(value) is bool
+        elif type(default) is int:
+            ranges = {'data_retention_days': (-1, 3650), 'idle_timeout_seconds': (0, 3600),
+                      'break_reminder_interval_minutes': (0, 180),
+                      'break_reminder_duration_minutes': (1, 30)}
+            low, high = ranges[key]
+            valid = type(value) is int and low <= value <= high
+            if key == 'data_retention_days' and value == 0:
+                value = -1  # Historical zero had no pruning semantics.
+        elif key == 'app_groups':
+            valid = isinstance(value, dict) and all(
+                isinstance(value.get(group, []), list) and all(isinstance(item, str) for item in value.get(group, []))
+                for group in ('productivity', 'other'))
+            if valid:
+                value = {group: list(dict.fromkeys(value.get(group, []))) for group in ('productivity', 'other')}
+        else:
+            allowed = {'heatmap_theme': HEATMAP_THEMES, 'keyboard_layout': ('full', 'tkl', '75', '60'),
+                       'language': ('en', 'zh')}
+            valid = isinstance(value, str) and value in allowed[key]
+        if not valid:
+            raise ValueError(f'Invalid value for {key}')
+        return copy.deepcopy(value)
+
     def load(self):
-        """Load configuration from file."""
+        self._config = copy.deepcopy(DEFAULT_CONFIG)
+        self.load_error = None
         try:
             if os.path.exists(self.config_path):
-                with open(self.config_path, 'r', encoding='utf-8') as f:
-                    saved_config = json.load(f)
-                    # Merge with defaults (in case new options were added)
-                    self._config.update(saved_config)
-        except Exception as e:
-            print(f"Warning: Could not load config: {e}")
-    
+                with open(self.config_path, 'r', encoding='utf-8') as stream:
+                    saved = json.load(stream)
+                if not isinstance(saved, dict):
+                    raise ValueError('Configuration must be a JSON object')
+                invalid = []
+                for key, value in saved.items():
+                    if key in DEFAULT_CONFIG:
+                        try:
+                            self._config[key] = self._validate(key, value)
+                        except ValueError:
+                            invalid.append(key)
+                if invalid:
+                    raise ValueError('Invalid settings replaced by defaults: ' + ', '.join(invalid))
+        except (OSError, ValueError) as error:
+            self.load_error = str(error)
+            logging.getLogger(__name__).warning('Configuration could not be fully loaded: %s', error)
+
     def save(self):
-        """Save configuration to file."""
-        try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self._config, f, indent=2)
-        except Exception as e:
-            print(f"Warning: Could not save config: {e}")
-    
+        os.makedirs(self.config_dir, exist_ok=True)
+        with atomic_text_file(self.config_path) as stream:
+            json.dump(self._config, stream, indent=2, ensure_ascii=False)
+            stream.write('\n')
+
     def get(self, key, default=None):
-        """Get a configuration value."""
-        return self._config.get(key, default)
-    
+        return copy.deepcopy(self._config.get(key, default))
+
     def set(self, key, value):
-        """Set a configuration value and save."""
+        value = self._validate(key, value)
+        previous = self._config[key]
         self._config[key] = value
-        self.save()
-    
+        try:
+            self.save()
+        except Exception:
+            self._config[key] = previous
+            raise
+
     # Property accessors for common settings
     @property
     def autostart(self):
@@ -95,32 +141,26 @@ class Config:
     
     @autostart.setter
     def autostart(self, value):
-        """Set autostart value and update registry.
-        
-        Returns the result of registry update as (success, error_message).
-        The result is stored in self._last_autostart_result for UI to check.
-        """
-        self._config['autostart'] = value
-        self.save()  # Save config first
-        result = self._update_autostart_registry(value)  # Then update registry
+        value = self._validate('autostart', value)
+        previous = self.is_autostart_enabled()
+        result = self._update_autostart_registry(value)
+        if result[0]:
+            try:
+                self.set('autostart', value)
+            except OSError as error:
+                rollback = self._update_autostart_registry(previous)
+                self._config['autostart'] = self.is_autostart_enabled()
+                result = (False, str(error) + ('' if rollback[0] else '; ' + rollback[1]))
         self._last_autostart_result = result
-        
-        # If registry update failed, revert config to match actual state
-        if not result[0]:
-            actual_state = self.is_autostart_enabled()
-            self._config['autostart'] = actual_state
-            self.save()
-        
         return result
-    
+
     @property
     def data_retention_days(self):
         return self._config.get('data_retention_days', 365)
     
     @data_retention_days.setter
     def data_retention_days(self, value):
-        self._config['data_retention_days'] = value
-        self.save()
+        self.set('data_retention_days', value)
     
     @property
     def heatmap_theme(self):
@@ -128,8 +168,7 @@ class Config:
     
     @heatmap_theme.setter
     def heatmap_theme(self, value):
-        self._config['heatmap_theme'] = value
-        self.save()
+        self.set('heatmap_theme', value)
     
     @property
     def keyboard_layout(self):
@@ -137,8 +176,7 @@ class Config:
     
     @keyboard_layout.setter
     def keyboard_layout(self, value):
-        self._config['keyboard_layout'] = value
-        self.save()
+        self.set('keyboard_layout', value)
     
     @property
     def minimize_to_tray(self):
@@ -146,8 +184,7 @@ class Config:
     
     @minimize_to_tray.setter
     def minimize_to_tray(self, value):
-        self._config['minimize_to_tray'] = value
-        self.save()
+        self.set('minimize_to_tray', value)
     
     @property
     def show_notifications(self):
@@ -155,8 +192,7 @@ class Config:
     
     @show_notifications.setter
     def show_notifications(self, value):
-        self._config['show_notifications'] = value
-        self.save()
+        self.set('show_notifications', value)
     
     @property
     def language(self):
@@ -164,8 +200,7 @@ class Config:
     
     @language.setter
     def language(self, value):
-        self._config['language'] = value
-        self.save()
+        self.set('language', value)
     
     @property
     def idle_timeout_seconds(self):
@@ -173,8 +208,7 @@ class Config:
     
     @idle_timeout_seconds.setter
     def idle_timeout_seconds(self, value):
-        self._config['idle_timeout_seconds'] = max(0, int(value))
-        self.save()
+        self.set('idle_timeout_seconds', value)
     
     @property
     def break_reminder_enabled(self):
@@ -182,8 +216,7 @@ class Config:
     
     @break_reminder_enabled.setter
     def break_reminder_enabled(self, value):
-        self._config['break_reminder_enabled'] = bool(value)
-        self.save()
+        self.set('break_reminder_enabled', value)
     
     @property
     def break_reminder_interval_minutes(self):
@@ -191,8 +224,7 @@ class Config:
     
     @break_reminder_interval_minutes.setter
     def break_reminder_interval_minutes(self, value):
-        self._config['break_reminder_interval_minutes'] = max(0, int(value))
-        self.save()
+        self.set('break_reminder_interval_minutes', value)
     
     @property
     def break_reminder_duration_minutes(self):
@@ -200,19 +232,17 @@ class Config:
     
     @break_reminder_duration_minutes.setter
     def break_reminder_duration_minutes(self, value):
-        self._config['break_reminder_duration_minutes'] = max(1, int(value))
-        self.save()
+        self.set('break_reminder_duration_minutes', value)
     
     @property
     def app_groups(self):
         """Get app groups configuration."""
-        return self._config.get('app_groups', {'productivity': [], 'other': []})
+        return self.get('app_groups')
     
     @app_groups.setter
     def app_groups(self, value):
         """Set app groups configuration."""
-        self._config['app_groups'] = value
-        self.save()
+        self.set('app_groups', value)
     
     @property
     def screen_time_group_display(self):
@@ -222,8 +252,7 @@ class Config:
     @screen_time_group_display.setter
     def screen_time_group_display(self, value):
         """Set screen time group display mode."""
-        self._config['screen_time_group_display'] = bool(value)
-        self.save()
+        self.set('screen_time_group_display', value)
     
     def get_app_group(self, app_name):
         """Get the group for a specific app. Returns 'productivity', 'other', or None if unassigned."""
@@ -307,7 +336,7 @@ class Config:
                 if exe_path is None:
                     winreg.CloseKey(key)
                     return (False, "Cannot determine executable path.")
-                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, exe_path)
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, f'"{exe_path}"')
             else:
                 try:
                     winreg.DeleteValue(key, APP_NAME)

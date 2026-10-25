@@ -154,6 +154,8 @@ class Database:
             "app_foreground_time (date DATE, hour INTEGER, app_name TEXT, duration_seconds REAL DEFAULT 0, PRIMARY KEY (date, hour, app_name))",
         )
         with self.transaction() as conn:
+            if conn.execute('PRAGMA user_version').fetchone()[0] > 1:
+                raise RuntimeError('This database was created by a newer ActivityTrack version')
             for definition in definitions:
                 conn.execute("CREATE TABLE IF NOT EXISTS " + definition)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(app_stats)")}
