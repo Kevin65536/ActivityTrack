@@ -55,7 +55,7 @@ class DataExporter:
             True if successful, False otherwise
         """
         try:
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 if start_date and end_date:
@@ -104,7 +104,7 @@ class DataExporter:
             True if successful, False otherwise
         """
         try:
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 if start_date and end_date:
@@ -136,7 +136,7 @@ class DataExporter:
                 rows = cursor.fetchall()
                 
                 # Get metadata for friendly names
-                metadata = self.db.get_app_metadata_dict()
+                metadata = self.db.get_app_metadata_dict(connection=conn)
                 
                 with open(filepath, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
@@ -164,7 +164,7 @@ class DataExporter:
             True if successful, False otherwise
         """
         try:
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 if start_date and end_date:
@@ -209,7 +209,7 @@ class DataExporter:
             True if successful, False otherwise
         """
         try:
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 if start_date and end_date:
@@ -231,7 +231,7 @@ class DataExporter:
                 rows = cursor.fetchall()
                 
                 # Get metadata for friendly names
-                metadata = self.db.get_app_metadata_dict()
+                metadata = self.db.get_app_metadata_dict(connection=conn)
                 
                 with open(filepath, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
@@ -239,6 +239,8 @@ class DataExporter:
                     for row in rows:
                         app_name = row[0]
                         total_seconds = row[1] or 0
+                        if float(total_seconds).is_integer():
+                            total_seconds = int(total_seconds)
                         friendly_name = metadata.get(app_name, {}).get('friendly_name', '')
                         
                         # Format time as HH:MM:SS
@@ -317,7 +319,7 @@ class DataExporter:
                 'screen_time': []
             }
             
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Daily stats
@@ -371,7 +373,7 @@ class DataExporter:
                         ORDER BY keys DESC
                     ''')
                 
-                metadata = self.db.get_app_metadata_dict()
+                metadata = self.db.get_app_metadata_dict(connection=conn)
                 
                 for row in cursor.fetchall():
                     app_name = row[0]

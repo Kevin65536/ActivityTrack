@@ -744,76 +744,75 @@ class ActivityTrack:
 
     def flush_stats(self):
         with self.lock:
-            has_input = bool(self.hourly_input_buffer)
+            with self.db.transaction():
+                has_input = bool(self.hourly_input_buffer)
 
-            # Check if foreground time buffer has any non-zero values
-            has_time = any(s > 0 for s in self.foreground_time_buffer.values())
+                # Check if foreground time buffer has any non-zero values
+                has_time = any(s > 0 for s in self.foreground_time_buffer.values())
 
-            if not has_input and not has_time:
-                return
+                if not has_input and not has_time:
+                    return
 
-            if has_input:
-                # Aggregate per-date totals for daily_stats
-                daily_totals = {}  # {date: {keys, clicks, distance, scroll}}
-                for (date_part, hour_part), stats in self.hourly_input_buffer.items():
-                    dt = daily_totals.setdefault(date_part, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
-                    dt['keys'] += stats['keys']
-                    dt['clicks'] += stats['clicks']
-                    dt['distance'] += stats['distance']
-                    dt['scroll'] += stats['scroll']
+                if has_input:
+                    # Aggregate per-date totals for daily_stats
+                    daily_totals = {}  # {date: {keys, clicks, distance, scroll}}
+                    for (date_part, hour_part), stats in self.hourly_input_buffer.items():
+                        dt = daily_totals.setdefault(date_part, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
+                        dt['keys'] += stats['keys']
+                        dt['clicks'] += stats['clicks']
+                        dt['distance'] += stats['distance']
+                        dt['scroll'] += stats['scroll']
 
-                for date_part, dt in daily_totals.items():
-                    self.db.update_stats(
-                        date_part,
-                        dt['keys'],
-                        dt['clicks'],
-                        dt['distance'],
-                        dt['scroll']
-                    )
+                    for date_part, dt in daily_totals.items():
+                        self.db.update_stats(
+                            date_part,
+                            dt['keys'],
+                            dt['clicks'],
+                            dt['distance'],
+                            dt['scroll']
+                        )
 
-                # Per-app hourly stats
-                for (date_part, hour_part, app_name), stats in self.hourly_app_stats_buffer.items():
-                    self.db.update_app_stats(date_part, app_name,
-                        key_count=stats['keys'],
-                        click_count=stats['clicks'],
-                        scroll_count=stats['scrolls'],
-                        distance=stats['distance']
-                    )
-                    self.db.update_hourly_app_stats(date_part, hour_part, app_name,
-                        key_count=stats['keys'],
-                        clicks=stats['clicks'],
-                        scrolls=stats['scrolls'],
-                        distance=stats['distance']
-                    )
+                    # Per-app hourly stats
+                    for (date_part, hour_part, app_name), stats in self.hourly_app_stats_buffer.items():
+                        self.db.update_app_stats(date_part, app_name,
+                            key_count=stats['keys'],
+                            click_count=stats['clicks'],
+                            scroll_count=stats['scrolls'],
+                            distance=stats['distance']
+                        )
+                        self.db.update_hourly_app_stats(date_part, hour_part, app_name,
+                            key_count=stats['keys'],
+                            clicks=stats['clicks'],
+                            scrolls=stats['scrolls'],
+                            distance=stats['distance']
+                        )
 
-                # Heatmap data (keyed by (date, key_code))
-                for (date_part, key_code), count in self.heatmap_buffer.items():
-                    self.db.update_heatmap(date_part, key_code, count)
+                    # Heatmap data (keyed by (date, key_code))
+                    for (date_part, key_code), count in self.heatmap_buffer.items():
+                        self.db.update_heatmap(date_part, key_code, count)
 
-                # Mouse heatmap (keyed by (date, x, y))
-                for (date_part, x, y), count in self.mouse_heatmap_buffer.items():
-                    self.db.update_mouse_heatmap(date_part, x, y, count)
+                    # Mouse heatmap (keyed by (date, x, y))
+                    for (date_part, x, y), count in self.mouse_heatmap_buffer.items():
+                        self.db.update_mouse_heatmap(date_part, x, y, count)
 
-                # App-specific keyboard heatmap (keyed by (date, app, key_code))
-                for (date_part, app_name, key_code), count in self.app_heatmap_buffer.items():
-                    self.db.update_app_heatmap(date_part, app_name, key_code, count)
+                    # App-specific keyboard heatmap (keyed by (date, app, key_code))
+                    for (date_part, app_name, key_code), count in self.app_heatmap_buffer.items():
+                        self.db.update_app_heatmap(date_part, app_name, key_code, count)
 
-                # App-specific mouse heatmap (keyed by (date, app, x, y))
-                for (date_part, app_name, x, y), count in self.app_mouse_heatmap_buffer.items():
-                    self.db.update_app_mouse_heatmap(date_part, app_name, x, y, count)
+                    # App-specific mouse heatmap (keyed by (date, app, x, y))
+                    for (date_part, app_name, x, y), count in self.app_mouse_heatmap_buffer.items():
+                        self.db.update_app_mouse_heatmap(date_part, app_name, x, y, count)
 
-                # Reset input buffers
-                self.hourly_input_buffer.clear()
-                self.hourly_app_stats_buffer.clear()
-                self.heatmap_buffer.clear()
-                self.mouse_heatmap_buffer.clear()
-                self.app_heatmap_buffer.clear()
-                self.app_mouse_heatmap_buffer.clear()
+                if has_time:
+                    # Flush foreground time buffer
+                    for (date_part, hour_part, app_name), seconds in self.foreground_time_buffer.items():
+                        if seconds > 0:
+                            self.db.update_foreground_time(date_part, hour_part, app_name, float(seconds))
 
-            if has_time:
-                # Flush foreground time buffer
-                for (date_part, hour_part, app_name), seconds in self.foreground_time_buffer.items():
-                    if seconds > 0:
-                        self.db.update_foreground_time(date_part, hour_part, app_name, int(seconds))
-
-                self.foreground_time_buffer.clear()
+            self.hourly_input_buffer.clear()
+            self.hourly_app_stats_buffer.clear()
+            self.heatmap_buffer.clear()
+            self.mouse_heatmap_buffer.clear()
+            self.app_heatmap_buffer.clear()
+            self.app_mouse_heatmap_buffer.clear()
+            self.foreground_time_buffer.clear()

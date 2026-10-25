@@ -59,6 +59,7 @@ class TestScreenTimeBucketing(unittest.TestCase):
     def test_tracker_flush_buckets_by_hour(self):
         fd, path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
+        tracker = None
         try:
             tracker = ActivityTrack(path)
             start = datetime.datetime(2025, 12, 24, 0, 10, 0).timestamp()
@@ -85,6 +86,8 @@ class TestScreenTimeBucketing(unittest.TestCase):
             self.assertTrue(all(total <= 3600 for _hour, total in rows))
             self.assertEqual(sum(total for _hour, total in rows), int(end - start))
         finally:
+            if tracker is not None:
+                tracker.db.close()
             try:
                 os.remove(path)
             except OSError:
@@ -94,6 +97,7 @@ class TestScreenTimeBucketing(unittest.TestCase):
         """A long wall-clock gap (sleep/hibernate) should not be counted as screen time."""
         fd, path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
+        tracker = None
         try:
             tracker = ActivityTrack(path)
             tracker.get_active_app_name = lambda: "dummy.exe"
@@ -123,6 +127,8 @@ class TestScreenTimeBucketing(unittest.TestCase):
             self.assertGreaterEqual(total_seconds, 3.9)
             self.assertLess(total_seconds, 10.0)
         finally:
+            if tracker is not None:
+                tracker.db.close()
             try:
                 os.remove(path)
             except OSError:
