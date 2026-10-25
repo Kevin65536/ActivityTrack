@@ -1,0 +1,18 @@
+{
+  "autostart": false,
+  "data_retention_days": 365,
+  "heatmap_theme": "default",
+  "keyboard_layout": "tkl",
+  "minimize_to_tray": true,
+  "show_notifications": true,
+  "language": "en",
+  "idle_timeout_seconds": 300,
+  "break_reminder_enabled": true,
+  "break_reminder_interval_minutes": 45,
+  "break_reminder_duration_minutes": 5,
+  "app_groups": {
+    "productivity": [],
+    "other": []
+  },
+  "screen_time_group_display": false
+}

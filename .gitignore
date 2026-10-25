@@ -1,11 +1,19 @@
 # virtual environment
 venv/
+.venv/
 
 # Python cache
 __pycache__/
 
 # database
 *.db
+*.db-wal
+*.db-shm
+config.json
+*.log
+*.lock.tmp
+outputs/
+.ruff_cache/
 
 src/app_trace.txt
 src/tracker_error.log

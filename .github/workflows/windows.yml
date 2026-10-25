@@ -1,0 +1,37 @@
+name: Windows validation
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        with:
+          version: '0.13.5'
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run python -m unittest discover -s tests -v
+      - run: uv run python main.py --smoke-test --data-dir outputs/source-smoke
+      - run: uv run pip-audit --strict --no-deps --disable-pip -r requirements.txt
+      - run: uv run python build.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ActivityTrack-Windows
+          path: |
+            outputs/releases/*/*.zip
+            outputs/releases/*/SHA256SUMS.txt
+            outputs/releases/*/build-info.json
+          if-no-files-found: error
