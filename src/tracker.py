@@ -1,193 +1,527 @@
-import threading
-import time
-import os
-import math
-import logging
+"""Queue-based input recording with atomic persistence and non-overlapping time."""
 import ctypes
 from ctypes import wintypes
+from collections import defaultdict
+from dataclasses import dataclass
+import datetime
+import logging
+import math
+import os
+import queue
+import threading
+import time
+
+import psutil
+import win32api
 import win32gui
 import win32process
-import win32api
-import win32con
-import psutil
+
 from .database import Database
 from .screen_time import split_interval_by_local_hour
-import datetime
-from collections import defaultdict
+from .native_input import (
+    NativeInputCapture, user32, KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT,
+    WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_MOUSEWHEEL,
+)
 
 logger = logging.getLogger(__name__)
+gdi32 = ctypes.WinDLL('gdi32', use_last_error=True)
+user32.GetDC.argtypes = [wintypes.HWND]
+user32.GetDC.restype = wintypes.HDC
+user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+user32.ReleaseDC.restype = ctypes.c_int
+gdi32.GetDeviceCaps.argtypes = [wintypes.HDC, ctypes.c_int]
+gdi32.GetDeviceCaps.restype = ctypes.c_int
 
-# Ctypes definitions
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
-gdi32 = ctypes.windll.gdi32
 
-WH_KEYBOARD_LL = 13
-WH_MOUSE_LL = 14
-WM_KEYDOWN = 0x0100
-WM_KEYUP = 0x0101
-WM_SYSKEYDOWN = 0x0104
-WM_SYSKEYUP = 0x0105
-WM_MOUSEMOVE = 0x0200
-WM_LBUTTONDOWN = 0x0201
-WM_RBUTTONDOWN = 0x0204
-WM_MBUTTONDOWN = 0x0207
-WM_MOUSEWHEEL = 0x020A
+@dataclass(frozen=True, slots=True)
+class CapturedEvent:
+    kind: str
+    wall_time: float
+    monotonic_time: float
+    payload: tuple
+    hwnd: int | None
+    generation: int
 
-# CRITICAL: On 64-bit Windows, LPARAM and LRESULT are 64-bit
-LRESULT = ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
-LPARAM = ctypes.c_longlong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_long
-
-class KBDLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [
-        ("vkCode", wintypes.DWORD),
-        ("scanCode", wintypes.DWORD),
-        ("flags", wintypes.DWORD),
-        ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG))
-    ]
-
-class MSLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [
-        ("pt", wintypes.POINT),
-        ("mouseData", wintypes.DWORD),
-        ("flags", wintypes.DWORD),
-        ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.POINTER(wintypes.ULONG))
-    ]
-
-# CRITICAL: Use proper types for 64-bit Windows
-# HOOKPROC signature: LRESULT CALLBACK HookProc(int nCode, WPARAM wParam, LPARAM lParam)
-HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, LPARAM)
-
-# Set proper argument and return types for CallNextHookEx
-user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, LPARAM]
-user32.CallNextHookEx.restype = LRESULT
 
 class ActivityTrack:
-    def __init__(self, db_path="tracker.db"):
+    def __init__(self, db_path="tracker.db", *, queue_limit=65536):
         self.db = Database(db_path)
+        self.lock = threading.RLock()
+        self._lifecycle_lock = threading.Lock()
         self.running = False
-        
-        # Buffers - use thread-safe access
-        # Input buffers are keyed by (date, hour) so that data is always
-        # attributed to the correct period even if flushing is delayed.
-        self.hourly_input_buffer = {}  # {(date, hour): {keys, clicks, distance, scroll}}
-        self.hourly_app_stats_buffer = {}  # {(date, hour, app_name): {keys, clicks, scrolls, distance}}
-        self.heatmap_buffer = {}  # {(date, key_code): count}
-        self.mouse_heatmap_buffer = {}  # {(date, x, y): count}
-        self.app_heatmap_buffer = {}  # {(date, app_name, key_code): count}
-        self.app_mouse_heatmap_buffer = {}  # {(date, app_name, x, y): count}
-        
-        # Screen time tracking
-        # Buffer by (date, hour, app_name) to avoid dumping long spans into a single hour.
-        # Values are float seconds.
-        self.foreground_time_buffer = {}  # {(date, hour, app_name): seconds}
+        self._closed = False
+        self.hourly_input_buffer = {}
+        self.hourly_app_stats_buffer = {}
+        self.heatmap_buffer = {}
+        self.mouse_heatmap_buffer = {}
+        self.app_heatmap_buffer = {}
+        self.app_mouse_heatmap_buffer = {}
+        self.foreground_time_buffer = {}
+        self._metadata_pending = {}
+        self.metadata_cache = {}
+        self._app_info_cache = {}
         self.current_foreground_app = None
         self.foreground_app_start_time = None
-        
-        # Idle detection
-        self.last_activity_time = time.time()  # Last user input activity
-        self.idle_timeout = 300  # Default 5 minutes (300 seconds)
-        self.is_idle = False  # Current idle state
-        self.idle_start_time = None  # When idle period started
-
-        # Detect large wall-clock jumps (e.g. PC sleep/hibernate) so we don't
-        # incorrectly count suspended time as foreground/idle usage.
-        # Tracker loops run every 1s/5s, so anything much larger than that is
-        # almost certainly suspend/resume.
-        self.suspend_gap_threshold_seconds = 120.0
-        self._last_wall_time_observed = None  # type: float | None
-        
-        self.lock = threading.Lock()
-        self.last_mouse_pos = None
-        self.cached_app_name = "Unknown"
-        self.last_app_check = 0
-        
-        self.hook_thread = None
-        self.hook_thread_id = None
-        self.keyboard_hook = None
-        self.mouse_hook = None
-        
-        # Track held keys to prevent counting repeats
-        self.keys_held = set()
-        
-        # Screen metrics for distance calculation
-        self._init_screen_metrics()
-
-    def _add_foreground_duration(self, app_name: str, start_ts: float | None, end_ts: float | None) -> None:
-        """Accumulate a duration into the foreground buffer, split by local hour/date."""
-        if not app_name or app_name == "Unknown" or start_ts is None or end_ts is None:
-            return
-        if end_ts <= start_ts:
-            return
-
-        for date_part, hour_part, seconds in split_interval_by_local_hour(start_ts, end_ts):
-            if seconds <= 0:
-                continue
-            key = (date_part, hour_part, app_name)
-            self.foreground_time_buffer[key] = self.foreground_time_buffer.get(key, 0.0) + float(seconds)
-
-    def _detect_and_handle_suspend_gap_unlocked(self, current_time: float) -> bool:
-        """Detect a large wall-clock gap and reset tracking to avoid overcounting.
-
-        Returns:
-            True if a suspend-like gap was detected and tracking state was reset.
-        """
-        last = self._last_wall_time_observed
-        self._last_wall_time_observed = float(current_time)
-        if last is None:
-            return False
-
-        gap = float(current_time) - float(last)
-        if gap <= float(self.suspend_gap_threshold_seconds):
-            return False
-
-        # Treat as a session break: do NOT attribute the gap to any app or idle.
-        self.last_activity_time = float(current_time)
+        self.last_activity_time = time.time()
+        self.idle_timeout = 300
         self.is_idle = False
         self.idle_start_time = None
-        if self.current_foreground_app is not None:
-            self.foreground_app_start_time = float(current_time)
+        self.suspend_gap_threshold_seconds = 10.0
+        self._last_wall_time_observed = None
+        self._last_monotonic_time_observed = None
+        self._paused_reasons = set()
+        self.last_mouse_pos = None
+        self._events = queue.SimpleQueue()
+        self._queue_limit = max(1, int(queue_limit))
+        self._generation = 0
+        self._accepting_events = True
+        self._stop_event = threading.Event()
+        self._shutdown_time = None
+        self._shutdown_error = None
+        self._capture = NativeInputCapture(self._enqueue_event)
+        self.keys_held = self._capture.keys_held
+        self.worker_thread = None
+        self.hook_thread = None
+        self.flush_thread = None
+        self.foreground_thread = None
+        self._hooks_requested = False
+        self._last_worker_tick = time.monotonic()
+        self.last_flush_time = None
+        self.write_error = None
+        self.processing_error = None
+        self.dropped_events = 0
+        self.retention_days = -1
+        self._last_retention_date = None
+        self._init_screen_metrics()
+
+    def _enqueue_event(self, kind, payload=(), hwnd=None):
+        """Called by hooks: never acquire recorder/database locks or perform I/O."""
+        if not self._accepting_events:
+            return False
+        # A SimpleQueue never waits for the consumer. Bound input backlog while
+        # allowing rare session/stop controls to be delivered even at capacity.
+        if kind != 'session' and self._events.qsize() >= self._queue_limit:
+            self.dropped_events += 1
+            return False
+        event = CapturedEvent(kind, time.time(), time.monotonic(), payload, hwnd, self._generation)
+        self._events.put(event)
         return True
 
-    def set_idle_timeout(self, seconds):
-        """Set the idle timeout threshold in seconds.
-        
-        Args:
-            seconds: Number of seconds of inactivity before considering user idle.
-                    Set to 0 or negative to disable idle detection.
-        """
+    def _process_event(self, event):
         with self.lock:
-            self.idle_timeout = max(0, seconds)
-    
-    def _update_activity_time(self):
-        """Update last activity time. Called on any user input."""
-        current_time = time.time()
+            if event.generation != self._generation:
+                return
+            if event.kind == 'session':
+                self._handle_session_state(*event.payload, now=event.wall_time, monotonic_time=event.monotonic_time)
+                return
+            if self._paused_reasons:
+                return
+            name = self.get_active_app_name(event.hwnd)
+            handlers = {'key': self.on_press, 'move': self.on_move,
+                        'click': self.on_click, 'scroll': self.on_scroll}
+            handlers[event.kind](*event.payload, timestamp=event.wall_time,
+                                 monotonic_time=event.monotonic_time, app_name=name)
+
+    def start(self, *, install_hooks=True):
+        with self._lifecycle_lock:
+            if self.running:
+                return
+            if self._closed or self._shutdown_time is not None:
+                raise RuntimeError('Create a new recorder after shutdown')
+            self.running = True
+            self._hooks_requested = install_hooks
+            self._stop_event.clear()
+            self.worker_thread = threading.Thread(target=self.flush_loop, name='ActivityTrack recorder', daemon=True)
+            self.flush_thread = self.worker_thread
+            self.worker_thread.start()
+            if install_hooks:
+                self._capture.start()
+                self.hook_thread = self._capture.thread
+
+    def stop(self):
+        """Stop capture, drain queued events, save, then close. Safe to call twice."""
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._accepting_events = False
+            if self._shutdown_time is None:
+                self._shutdown_time = (time.time(), time.monotonic())
+            self._capture.stop()
+            self.running = False
+            self._stop_event.set()
+            self._events.put(None)
+            if self.worker_thread and self.worker_thread.is_alive():
+                self.worker_thread.join(15)
+                if self.worker_thread.is_alive():
+                    raise RuntimeError('The recorder is still saving; please retry shutdown')
+                if self._shutdown_error is not None:
+                    raise RuntimeError('Could not save pending activity; please retry shutdown') from self._shutdown_error
+            else:
+                # Also supports retrying a failed final write and diagnostic mode.
+                while not self._events.empty():
+                    event = self._events.get_nowait()
+                    if event is not None:
+                        self._process_event(event)
+                self._record_foreground_time(*self._shutdown_time)
+                self.flush_stats()
+                self._shutdown_error = None
+            self.db.close()
+            self._closed = True
+
+    def flush_loop(self):
+        next_poll = time.monotonic()
+        next_flush = next_poll + 5.0
+        processed = 0
+        while not self._stop_event.is_set() or not self._events.empty():
+            try:
+                event = self._events.get(timeout=0.1)
+                if event is not None:
+                    self._process_event(event)
+            except queue.Empty:
+                pass
+            except Exception as error:
+                self.processing_error = str(error)
+                logger.exception('Unable to process an activity event')
+            self._last_worker_tick = time.monotonic()
+            processed += 1
+            if processed < 256 and not self._events.empty():
+                continue
+            processed = 0
+            now = time.monotonic()
+            if not self._stop_event.is_set() and self._events.empty() and now >= next_poll:
+                try:
+                    self._check_foreground_window()
+                except Exception as error:
+                    self.processing_error = str(error)
+                    logger.exception('Unable to update foreground time')
+                next_poll = time.monotonic() + 1.0
+            if not self._stop_event.is_set() and now >= next_flush:
+                try:
+                    # Never advance time past input events waiting in the queue.
+                    if self._events.empty():
+                        self._record_foreground_time()
+                    self.flush_stats()
+                    self._apply_retention()
+                except Exception as error:
+                    self.write_error = str(error)
+                    logger.exception('Unable to save activity; the batch remains buffered')
+                next_flush = time.monotonic() + 5.0
+        try:
+            self._record_foreground_time(*(self._shutdown_time or (time.time(), time.monotonic())))
+            self.flush_stats()
+        except Exception as error:
+            self._shutdown_error = error
+            self.write_error = str(error)
+            logger.exception('Unable to save the final activity batch')
+
+    def get_health_snapshot(self):
+        return {
+            'running': self.running,
+            'hooks_active': bool(self._capture.keyboard_hook and self._capture.mouse_hook),
+            'hooks_requested': self._hooks_requested,
+            'hook_error': self._capture.last_error,
+            'write_error': self.write_error,
+            'processing_error': self.processing_error,
+            'dropped_events': self.dropped_events,
+            'queue_depth': self._events.qsize(),
+            'last_flush_time': self.last_flush_time,
+            'worker_delayed': self.running and time.monotonic() - self._last_worker_tick > 10,
+            'paused': bool(self._paused_reasons),
+        }
+
+    def notify_session_state(self, paused, reason):
+        self._enqueue_event('session', (bool(paused), reason))
+
+    def _handle_session_state(self, paused, reason, *, now=None, monotonic_time=None):
+        now = time.time() if now is None else now
         with self.lock:
-            self.last_activity_time = current_time
-            
-            # If we were idle and now active, record the idle time
-            if self.is_idle and self.idle_start_time:
-                self._add_foreground_duration('[Idle]', self.idle_start_time, current_time)
-                self.is_idle = False
-                self.idle_start_time = None
-                # Reset foreground tracking to current app
-                self.foreground_app_start_time = current_time
-    
+            if not self._paused_reasons:
+                self._advance_time_unlocked(now, monotonic_time)
+            if paused:
+                self._paused_reasons.add(reason)
+            else:
+                self._paused_reasons.discard(reason)
+            self._reset_time_unlocked(now)
+            self._last_wall_time_observed = now
+            self._last_monotonic_time_observed = monotonic_time
+            if not self._paused_reasons:
+                self.current_foreground_app = None
+                self.foreground_app_start_time = None
+
+    def _reset_time_unlocked(self, now):
+        self.last_activity_time = now
+        self.is_idle = False
+        self.idle_start_time = None
+        self.foreground_app_start_time = now if self.current_foreground_app else None
+        self.last_mouse_pos = None
+        self._capture.reset_held_keys()
+
+    def _detect_and_handle_suspend_gap_unlocked(self, current_time, monotonic_time=None):
+        last = self._last_wall_time_observed
+        last_mono = self._last_monotonic_time_observed
+        if monotonic_time is not None and last_mono is not None and monotonic_time < last_mono:
+            return False  # A late queued event is not a system clock adjustment.
+        self._last_wall_time_observed = current_time
+        self._last_monotonic_time_observed = monotonic_time
+        if last is None:
+            return False
+        gap = current_time - last
+        clock_changed = (monotonic_time is not None and last_mono is not None
+                         and abs(gap - (monotonic_time - last_mono)) > 5.0)
+        if gap < 0 or gap > self.suspend_gap_threshold_seconds or clock_changed:
+            self._reset_time_unlocked(current_time)
+            return True
+        return False
+
+    def _add_foreground_duration(self, app_name, start_ts, end_ts):
+        if not app_name or app_name == 'Unknown' or start_ts is None or end_ts is None:
+            return
+        for date, hour, seconds in split_interval_by_local_hour(start_ts, end_ts):
+            key = (date, hour, app_name)
+            self.foreground_time_buffer[key] = self.foreground_time_buffer.get(key, 0.0) + seconds
+
+    def _time_intervals_unlocked(self, now):
+        if self._paused_reasons or self.current_foreground_app is None:
+            return []
+        cursor = self.idle_start_time if self.is_idle else self.foreground_app_start_time
+        if cursor is None or now <= cursor:
+            return []
+        # Time before the configured idle threshold is active; all later time is
+        # idle. No interval is ever retroactively counted a second time.
+        cutoff = self.last_activity_time + self.idle_timeout if self.idle_timeout > 0 else math.inf
+        intervals = []
+        active_end = min(now, cutoff)
+        if active_end > cursor:
+            intervals.append((self.current_foreground_app, cursor, active_end))
+        idle_start = max(cursor, cutoff)
+        if now > idle_start:
+            intervals.append(('[Idle]', idle_start, now))
+        return intervals
+
+    def _advance_time_unlocked(self, now, monotonic_time=None):
+        if self._detect_and_handle_suspend_gap_unlocked(now, monotonic_time):
+            return
+        if self._paused_reasons:
+            return
+        for app, start, end in self._time_intervals_unlocked(now):
+            self._add_foreground_duration(app, start, end)
+        cursor = self.idle_start_time if self.is_idle else self.foreground_app_start_time
+        if cursor is not None and now < cursor:
+            return
+        self.is_idle = self._check_idle_state_unlocked(now)
+        self.idle_start_time = now if self.is_idle else None
+        self.foreground_app_start_time = None if self.is_idle else now
+
+    def _update_activity_time(self, current_time=None, monotonic_time=None, app_name=None):
+        now = time.time() if current_time is None else current_time
+        mono = time.monotonic() if monotonic_time is None else monotonic_time
+        with self.lock:
+            self._advance_time_unlocked(now, mono)
+            self.last_activity_time = max(self.last_activity_time, now)
+            if app_name is not None:
+                self.current_foreground_app = app_name
+            self.is_idle = False
+            self.idle_start_time = None
+            self.foreground_app_start_time = max(now, self._last_wall_time_observed or now)
+
+    def _check_idle_state_unlocked(self, now=None):
+        now = time.time() if now is None else now
+        return self.idle_timeout > 0 and now - self.last_activity_time >= self.idle_timeout
+
     def _check_idle_state(self):
-        """Check if user is idle based on last activity time.
-        
-        Returns:
-            bool: True if user is currently idle
-        """
-        if self.idle_timeout <= 0:
-            return False  # Idle detection disabled
-        
-        current_time = time.time()
-        time_since_activity = current_time - self.last_activity_time
-        return time_since_activity >= self.idle_timeout
-    
+        with self.lock:
+            return self._check_idle_state_unlocked()
+
+    def set_idle_timeout(self, seconds):
+        with self.lock:
+            self._advance_time_unlocked(time.time(), time.monotonic())
+            self.idle_timeout = max(0, int(seconds))
+
+    def _check_foreground_window(self):
+        with self.lock:
+            if self._paused_reasons:
+                return
+            name = self.get_active_app_name()
+            now = time.time()
+            self._advance_time_unlocked(now, time.monotonic())
+            self.current_foreground_app = name
+
+    def _record_foreground_time(self, timestamp=None, monotonic_time=None):
+        now = time.time() if timestamp is None else timestamp
+        mono = time.monotonic() if monotonic_time is None else monotonic_time
+        with self.lock:
+            self._advance_time_unlocked(now, mono)
+
+    def get_foreground_time_snapshot(self):
+        with self.lock:
+            today = datetime.date.today()
+            totals = defaultdict(float)
+            for (date, hour, app), seconds in self.foreground_time_buffer.items():
+                if date == today:
+                    totals[app] += seconds
+            now = time.time()
+            last = self._last_wall_time_observed
+            if last is not None and (now < last or now - last > self.suspend_gap_threshold_seconds):
+                return dict(totals)
+            for app, start, end in self._time_intervals_unlocked(now):
+                if app != 'Unknown':
+                    for date, hour, seconds in split_interval_by_local_hour(start, end):
+                        if date == today:
+                            totals[app] += seconds
+            return dict(totals)
+
+    def get_active_app_info(self, hwnd=None):
+        try:
+            hwnd = win32gui.GetForegroundWindow() if hwnd is None else hwnd
+            if not hwnd:
+                return 'Unknown', None, None
+            now = time.monotonic()
+            cached = self._app_info_cache.get(hwnd)
+            if cached is not None and now < cached[0]:
+                return cached[1]
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            process = psutil.Process(pid)
+            name = process.name()
+            try:
+                path = process.exe()
+            except (psutil.Error, OSError):
+                path = None
+            result = (name, path, pid)
+            if len(self._app_info_cache) >= 256:
+                self._app_info_cache.clear()
+            self._app_info_cache[hwnd] = (now + 0.5, result)
+            return result
+        except (psutil.Error, OSError, RuntimeError):
+            return 'Unknown', None, None
+        except Exception:
+            # Foreground windows can disappear between either Win32 query.
+            return 'Unknown', None, None
+
+    def _check_update_metadata(self, app_name, exe_path):
+        if app_name == 'Unknown':
+            return
+        with self.lock:
+            if app_name in self.metadata_cache and (not exe_path or self.metadata_cache[app_name] == exe_path):
+                return
+            friendly = self.get_file_description(exe_path) or app_name.removesuffix('.exe')
+            self._metadata_pending[app_name] = (friendly, exe_path)
+            self.metadata_cache[app_name] = exe_path
+
+    def get_active_app_name(self, hwnd=None):
+        name, path, _ = self.get_active_app_info(hwnd)
+        self._check_update_metadata(name, path)
+        return name
+
+    def low_level_keyboard_proc(self, code, message, address):
+        return self._capture.keyboard_proc(code, message, address)
+
+    def low_level_mouse_proc(self, code, message, address):
+        return self._capture.mouse_proc(code, message, address)
+
+    def _input_context(self, timestamp, monotonic_time, app_name):
+        now = time.time() if timestamp is None else timestamp
+        name = self.get_active_app_name() if app_name is None else app_name
+        self._update_activity_time(now, monotonic_time, name)
+        moment = datetime.datetime.fromtimestamp(now)
+        return (moment.date(), moment.hour), name
+
+    @staticmethod
+    def _empty_input():
+        return {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0}
+
+    @staticmethod
+    def _empty_app():
+        return {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scrolls': 0.0}
+
+    def on_press(self, vk_code, scan_code, *, timestamp=None, monotonic_time=None, app_name=None):
+        with self.lock:
+            if self._paused_reasons:
+                return
+            (date, hour), app = self._input_context(timestamp, monotonic_time, app_name)
+            self.hourly_input_buffer.setdefault((date, hour), self._empty_input())['keys'] += 1
+            self.hourly_app_stats_buffer.setdefault((date, hour, app), self._empty_app())['keys'] += 1
+            key = (date, scan_code)
+            self.heatmap_buffer[key] = self.heatmap_buffer.get(key, 0) + 1
+            key = (date, app, scan_code)
+            self.app_heatmap_buffer[key] = self.app_heatmap_buffer.get(key, 0) + 1
+
+    def on_move(self, x, y, *, timestamp=None, monotonic_time=None, app_name=None):
+        with self.lock:
+            if self._paused_reasons:
+                return
+            (date, hour), app = self._input_context(timestamp, monotonic_time, app_name)
+            if self.last_mouse_pos is not None:
+                distance = math.hypot(x - self.last_mouse_pos[0], y - self.last_mouse_pos[1]) / self.px_per_mm / 1000.0
+                self.hourly_input_buffer.setdefault((date, hour), self._empty_input())['distance'] += distance
+                self.hourly_app_stats_buffer.setdefault((date, hour, app), self._empty_app())['distance'] += distance
+            self.last_mouse_pos = (x, y)
+
+    def on_click(self, x=0, y=0, *, timestamp=None, monotonic_time=None, app_name=None):
+        with self.lock:
+            if self._paused_reasons:
+                return
+            (date, hour), app = self._input_context(timestamp, monotonic_time, app_name)
+            self.hourly_input_buffer.setdefault((date, hour), self._empty_input())['clicks'] += 1
+            self.hourly_app_stats_buffer.setdefault((date, hour, app), self._empty_app())['clicks'] += 1
+            bx, by = (x // 5) * 5, (y // 5) * 5
+            key = (date, bx, by)
+            self.mouse_heatmap_buffer[key] = self.mouse_heatmap_buffer.get(key, 0) + 1
+            key = (date, app, bx, by)
+            self.app_mouse_heatmap_buffer[key] = self.app_mouse_heatmap_buffer.get(key, 0) + 1
+
+    def on_scroll(self, delta, *, timestamp=None, monotonic_time=None, app_name=None):
+        with self.lock:
+            if self._paused_reasons:
+                return
+            (date, hour), app = self._input_context(timestamp, monotonic_time, app_name)
+            steps = abs(delta) / 120.0
+            self.hourly_input_buffer.setdefault((date, hour), self._empty_input())['scroll'] += steps
+            self.hourly_app_stats_buffer.setdefault((date, hour, app), self._empty_app())['scrolls'] += steps
+
+    def _buffers(self):
+        return (self.hourly_input_buffer, self.hourly_app_stats_buffer,
+                self.heatmap_buffer, self.mouse_heatmap_buffer, self.app_heatmap_buffer,
+                self.app_mouse_heatmap_buffer, self.foreground_time_buffer)
+
+    def clear_all_data(self):
+        with self.lock:
+            self.db.clear_all_data()
+            self._generation += 1
+            for buffer in self._buffers():
+                buffer.clear()
+            self._metadata_pending.clear()
+            self.metadata_cache.clear()
+            self._app_info_cache.clear()
+            self.current_foreground_app = None
+            self._reset_time_unlocked(time.time())
+            self._last_wall_time_observed = None
+            self._last_monotonic_time_observed = None
+            self.dropped_events = 0
+
+    def set_retention_days(self, days):
+        days = int(days)
+        if days != -1 and not 1 <= days <= 3650:
+            raise ValueError('Retention must be -1 or between 1 and 3650 days')
+        with self.lock:
+            self.retention_days = days
+            self._last_retention_date = None
+            self._apply_retention()
+
+    def _apply_retention(self):
+        with self.lock:
+            today = datetime.date.today()
+            if self.retention_days == -1 or self._last_retention_date == today:
+                return
+            cutoff = today - datetime.timedelta(days=self.retention_days - 1)
+            self.db.prune_before(cutoff)
+            for buffer in self._buffers():
+                for key in list(buffer):
+                    if key[0] < cutoff:
+                        del buffer[key]
+            self.metadata_cache.clear()
+            self._last_retention_date = today
+
     def _init_screen_metrics(self):
         """Initialize screen physical dimensions for accurate distance calculation.
         
@@ -229,160 +563,26 @@ class ActivityTrack:
             self.screen_height_px = 1080
             self.px_per_mm = 1920 / 344
 
-    def start(self):
-        self.running = True
-        self.hook_thread = threading.Thread(target=self.hook_loop, daemon=True)
-        self.hook_thread.start()
-        
-        # Start flush timer
-        self.flush_thread = threading.Thread(target=self.flush_loop, daemon=True)
-        self.flush_thread.start()
-        
-        # Start foreground window tracker
-        self.foreground_thread = threading.Thread(target=self.foreground_track_loop, daemon=True)
-        self.foreground_thread.start()
 
-    def stop(self):
-        self.running = False
-        if self.hook_thread_id:
-            user32.PostThreadMessageW(self.hook_thread_id, 0x0012, 0, 0)  # WM_QUIT
-        # Flush remaining foreground time
-        self._record_foreground_time()
-        self.flush_stats()
-        # Close the database connection
+    def get_file_description(self, path):
+        """Extract FileDescription from PE file using win32api."""
+        if not path or not os.path.exists(path):
+            return None
         try:
-            self.db.close()
+            # Get language/codepage pairs
+            lang_info = win32api.GetFileVersionInfo(path, '\\VarFileInfo\\Translation')
+            if not lang_info:
+                return None
+            
+            # Construct the query string for the first language/codepage
+            lang, codepage = lang_info[0]
+            # Format: \StringFileInfo\040904B0\FileDescription
+            query = f'\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription'
+            
+            return win32api.GetFileVersionInfo(path, query)
         except Exception:
-            pass
+            return None
 
-    def foreground_track_loop(self):
-        """Track foreground window changes every second."""
-        while self.running:
-            try:
-                self._check_foreground_window()
-            except Exception as e:
-                pass  # Silently ignore errors
-            time.sleep(1)
-
-    def _check_foreground_window(self):
-        """Check if foreground window has changed and record time.
-        
-        Also handles idle detection - if user is idle, time is recorded as '[Idle]'
-        instead of the foreground application.
-        """
-        current_app = self.get_active_app_name()
-        current_time = time.time()
-        
-        with self.lock:
-            # If the process was suspended (sleep/hibernate), avoid counting the gap.
-            if self._detect_and_handle_suspend_gap_unlocked(current_time):
-                self.current_foreground_app = current_app
-                self.foreground_app_start_time = current_time
-
-            # Check if user has become idle
-            was_idle = self.is_idle
-            now_idle = self._check_idle_state_unlocked()
-            
-            if self.current_foreground_app is None:
-                # First time initialization
-                self.current_foreground_app = current_app
-                self.foreground_app_start_time = current_time
-                self.is_idle = now_idle
-                if now_idle:
-                    self.idle_start_time = current_time
-            elif now_idle and not was_idle:
-                # User just became idle - record time for current app up to this point
-                if self.foreground_app_start_time:
-                    # Time before idle should go to the app
-                    # Use last_activity_time as the cutoff
-                    active_duration = self.last_activity_time - self.foreground_app_start_time
-                    if active_duration > 0 and self.current_foreground_app != "Unknown":
-                        self._add_foreground_duration(self.current_foreground_app, self.foreground_app_start_time, self.last_activity_time)
-                
-                # Start tracking idle time
-                self.is_idle = True
-                self.idle_start_time = self.last_activity_time
-                self.foreground_app_start_time = None  # Pause app tracking
-                
-            elif not now_idle and was_idle:
-                # User returned from idle - this is handled in _update_activity_time
-                # But just in case, ensure state is consistent
-                self.is_idle = False
-                if self.idle_start_time:
-                    self._add_foreground_duration('[Idle]', self.idle_start_time, current_time)
-                self.idle_start_time = None
-                self.current_foreground_app = current_app
-                self.foreground_app_start_time = current_time
-                
-            elif not now_idle and current_app != self.current_foreground_app:
-                # Window changed while not idle, record time for previous app
-                if self.foreground_app_start_time:
-                    elapsed = current_time - self.foreground_app_start_time
-                    if elapsed > 0 and self.current_foreground_app != "Unknown":
-                        self._add_foreground_duration(self.current_foreground_app, self.foreground_app_start_time, current_time)
-                
-                # Start tracking new app
-                self.current_foreground_app = current_app
-                self.foreground_app_start_time = current_time
-            
-            # If idle, we don't update current_foreground_app - idle time is tracked separately
-    
-    def _check_idle_state_unlocked(self):
-        """Check idle state without acquiring lock (for use when lock is already held)."""
-        if self.idle_timeout <= 0:
-            return False
-        current_time = time.time()
-        time_since_activity = current_time - self.last_activity_time
-        return time_since_activity >= self.idle_timeout
-
-    def _record_foreground_time(self):
-        """Record current foreground app's accumulated time before flush."""
-        current_time = time.time()
-        with self.lock:
-            # If we resumed from suspend, skip attributing the gap.
-            if self._detect_and_handle_suspend_gap_unlocked(current_time):
-                return
-
-            if self.is_idle and self.idle_start_time:
-                # Record accumulated idle time
-                self._add_foreground_duration('[Idle]', self.idle_start_time, current_time)
-                # Reset idle start time but keep idle state
-                self.idle_start_time = current_time
-            elif self.current_foreground_app and self.foreground_app_start_time:
-                elapsed = current_time - self.foreground_app_start_time
-                if elapsed > 0 and self.current_foreground_app != "Unknown":
-                    self._add_foreground_duration(self.current_foreground_app, self.foreground_app_start_time, current_time)
-                # Reset start time but keep current app
-                self.foreground_app_start_time = current_time
-
-    def get_foreground_time_snapshot(self):
-        """Get a thread-safe snapshot of current foreground time buffer."""
-        with self.lock:
-            today = datetime.date.today()
-            totals = defaultdict(float)
-            for (date_part, _hour_part, app_name), seconds in self.foreground_time_buffer.items():
-                if date_part == today and seconds > 0:
-                    totals[app_name] += float(seconds)
-
-            current_time = time.time()
-
-            # Prevent snapshot from showing huge overcount after suspend/resume.
-            if self._detect_and_handle_suspend_gap_unlocked(current_time):
-                return dict(totals)
-            
-            if self.is_idle and self.idle_start_time:
-                # Currently idle - add accumulated idle time
-                for date_part, _hour_part, seconds in split_interval_by_local_hour(self.idle_start_time, current_time):
-                    if date_part == today and seconds > 0:
-                        totals['[Idle]'] += float(seconds)
-            elif self.current_foreground_app and self.foreground_app_start_time:
-                elapsed = current_time - self.foreground_app_start_time
-                if elapsed > 0 and self.current_foreground_app != "Unknown":
-                    for date_part, _hour_part, seconds in split_interval_by_local_hour(self.foreground_app_start_time, current_time):
-                        if date_part == today and seconds > 0:
-                            totals[self.current_foreground_app] += float(seconds)
-
-            return dict(totals)
 
     def get_stats_snapshot(self):
         """Get a thread-safe snapshot of current buffers + DB stats."""
@@ -464,294 +664,17 @@ class ActivityTrack:
             'app_mouse_heatmap_buffer': app_mouse_heatmap_buffer_copy
         }
 
-    def get_active_app_info(self):
-        """Returns (app_name, exe_path, pid)."""
-        try:
-            hwnd = win32gui.GetForegroundWindow()
-            _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            process = psutil.Process(pid)
-            
-            try:
-                name = process.name()
-            except Exception as e:
-                try:
-                    case_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tracker_error.log")
-                    with open(case_path, "a") as f:
-                        f.write(f"{datetime.datetime.now()} - Error in process.name(): {e}\n")
-                except:
-                    pass
-                name = "Unknown"
-                
-            try:
-                exe = process.exe()
-            except (psutil.AccessDenied, Exception):
-                exe = None
-                
-            return name, exe, pid
-        except Exception as e:
-            # Debug logging to file
-            try:
-                case_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tracker_error.log")
-                with open(case_path, "a") as f:
-                    import traceback
-                    f.write(f"{datetime.datetime.now()} - Error in get_active_app_info: {e}\n")
-                    f.write(traceback.format_exc())
-                    f.write("\n")
-            except:
-                pass
-            return "Unknown", None, None
-
-    def get_file_description(self, path):
-        """Extract FileDescription from PE file using win32api."""
-        if not path or not os.path.exists(path):
-            return None
-        try:
-            # Get language/codepage pairs
-            lang_info = win32api.GetFileVersionInfo(path, '\\VarFileInfo\\Translation')
-            if not lang_info:
-                return None
-            
-            # Construct the query string for the first language/codepage
-            lang, codepage = lang_info[0]
-            # Format: \StringFileInfo\040904B0\FileDescription
-            query = f'\\StringFileInfo\\{lang:04x}{codepage:04x}\\FileDescription'
-            
-            return win32api.GetFileVersionInfo(path, query)
-        except Exception:
-            return None
-
-    def _check_update_metadata(self, app_name, exe_path):
-        """Update DB with metadata if we haven't seen this app yet."""
-        if app_name == "Unknown": return
-        
-        # Simple cache to avoid re-querying DB/File every frame
-        if hasattr(self, 'metadata_cache') and app_name in self.metadata_cache:
-            return
-
-        if not hasattr(self, 'metadata_cache'):
-            self.metadata_cache = set()
-
-        friendly_name = self.get_file_description(exe_path)
-        if not friendly_name:
-            friendly_name = app_name # Fallback
-            
-        # Strip .exe if fallback
-        if friendly_name == app_name and friendly_name.lower().endswith('.exe'):
-            friendly_name = friendly_name[:-4]
-            # Capitalize?
-            friendly_name = friendly_name.capitalize()
-            
-        try:
-            self.db.update_app_metadata(app_name, friendly_name, exe_path)
-            self.metadata_cache.add(app_name)
-        except Exception:
-            pass
-
-    def get_active_app_name(self):
-        # Wraps the detailed version for backward compatibility if needed, 
-        # but better to integrate the metadata check here or in OnMove.
-        try:
-            name, path, _ = self.get_active_app_info()
-            
-            # Trace logging
-            try:
-                if not hasattr(self, 'trace_cache'): self.trace_cache = set()
-                if name not in self.trace_cache:
-                    case_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app_trace.txt")
-                    with open(case_path, "a") as f:
-                        f.write(f"{datetime.datetime.now()} - Detected: {name} (Path: {path})\n")
-                    self.trace_cache.add(name)
-            except:
-                pass
-
-            if name != "Unknown":
-                self._check_update_metadata(name, path)
-            return name
-        except Exception:
-            return "Unknown"
-
-    def low_level_keyboard_proc(self, nCode, wParam, lParam):
-        # CRITICAL: Always call CallNextHookEx first to prevent blocking input
-        result = user32.CallNextHookEx(self.keyboard_hook, nCode, wParam, lParam)
-        try:
-            if nCode >= 0:
-                kb_struct = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                vk = kb_struct.vkCode
-                
-                if wParam == WM_KEYDOWN or wParam == WM_SYSKEYDOWN:
-                    # Only count if this is the initial press (key not already held)
-                    if vk not in self.keys_held:
-                        self.keys_held.add(vk)
-                        # Check if it's a physical key (not injected)
-                        if not (kb_struct.flags & 0x10):  # LLKHF_INJECTED
-                            self.on_press(vk, kb_struct.scanCode)
-                elif wParam == WM_KEYUP or wParam == WM_SYSKEYUP:
-                    # Remove from held keys on release
-                    self.keys_held.discard(vk)
-        except Exception:
-            pass
-        return result
-
-    def low_level_mouse_proc(self, nCode, wParam, lParam):
-        # CRITICAL: Always call CallNextHookEx first to prevent blocking input
-        result = user32.CallNextHookEx(self.mouse_hook, nCode, wParam, lParam)
-        try:
-            if nCode >= 0:
-                ms_struct = ctypes.cast(lParam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                if wParam == WM_MOUSEMOVE:
-                    self.on_move(ms_struct.pt.x, ms_struct.pt.y)
-                elif wParam in (WM_LBUTTONDOWN, WM_RBUTTONDOWN, WM_MBUTTONDOWN):
-                    self.on_click(ms_struct.pt.x, ms_struct.pt.y)
-                elif wParam == WM_MOUSEWHEEL:
-                    # mouseData high word is delta
-                    delta = ctypes.c_short((ms_struct.mouseData >> 16) & 0xFFFF).value
-                    self.on_scroll(delta)
-        except Exception:
-            pass
-        return result
-
-    def hook_loop(self):
-        self.hook_thread_id = kernel32.GetCurrentThreadId()
-        
-        # Keep references to callbacks to prevent GC
-        self.kb_proc = HOOKPROC(self.low_level_keyboard_proc)
-        self.ms_proc = HOOKPROC(self.low_level_mouse_proc)
-        
-        self.keyboard_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self.kb_proc, None, 0)
-        self.mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self.ms_proc, None, 0)
-        
-        if not self.keyboard_hook or not self.mouse_hook:
-            print(f"Failed to set hooks: KB={self.keyboard_hook}, MS={self.mouse_hook}")
-            return
-        
-        msg = wintypes.MSG()
-        # Use GetMessage which blocks efficiently until a message arrives
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
-            if msg.message == 0x0012: # WM_QUIT
-                break
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
-        
-        user32.UnhookWindowsHookEx(self.keyboard_hook)
-        user32.UnhookWindowsHookEx(self.mouse_hook)
-
-    def _current_date_hour(self):
-        """Return (date, hour) for the current moment."""
-        now = datetime.datetime.now()
-        return now.date(), now.hour
-
-    def on_press(self, vk_code, scan_code):
-        self._update_activity_time()  # Update last activity for idle detection
-        with self.lock:
-            dh = self._current_date_hour()
-
-            # Global daily + hourly input stats
-            buf = self.hourly_input_buffer.setdefault(dh, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
-            buf['keys'] += 1
-
-            # App stats
-            app_name = self.get_active_app_name()
-            app_key = (*dh, app_name)
-            app_buf = self.hourly_app_stats_buffer.setdefault(app_key, {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0})
-            app_buf['keys'] += 1
-
-            # Heatmap stats (global)
-            hm_key = (dh[0], scan_code)
-            self.heatmap_buffer[hm_key] = self.heatmap_buffer.get(hm_key, 0) + 1
-
-            # App-specific heatmap
-            ahm_key = (dh[0], app_name, scan_code)
-            self.app_heatmap_buffer[ahm_key] = self.app_heatmap_buffer.get(ahm_key, 0) + 1
-
-    def on_move(self, x, y):
-        self._update_activity_time()  # Update last activity for idle detection
-        if self.last_mouse_pos:
-            # Calculate pixel distance
-            dx = x - self.last_mouse_pos[0]
-            dy = y - self.last_mouse_pos[1]
-            dist_px = math.sqrt(dx * dx + dy * dy)
-
-            # Convert pixels to meters:
-            # dist_px / px_per_mm = distance in mm
-            # distance in mm / 1000 = distance in meters
-            dist_meters = dist_px / self.px_per_mm / 1000.0
-
-            with self.lock:
-                dh = self._current_date_hour()
-                buf = self.hourly_input_buffer.setdefault(dh, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
-                buf['distance'] += dist_meters
-
-                # Update app distance (throttled check for active app)
-                now = time.time()
-                if now - self.last_app_check > 0.5:  # Check active app every 500ms
-                    self.cached_app_name = self.get_active_app_name()
-                    self.last_app_check = now
-
-                app = self.cached_app_name
-                app_key = (*dh, app)
-                app_buf = self.hourly_app_stats_buffer.setdefault(app_key, {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0})
-                app_buf['distance'] += dist_meters
-        self.last_mouse_pos = (x, y)
-
-    def on_click(self, x=0, y=0):
-        self._update_activity_time()  # Update last activity for idle detection
-        with self.lock:
-            dh = self._current_date_hour()
-            buf = self.hourly_input_buffer.setdefault(dh, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
-            buf['clicks'] += 1
-
-            # App stats
-            app = self.get_active_app_name()
-            app_key = (*dh, app)
-            app_buf = self.hourly_app_stats_buffer.setdefault(app_key, {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0})
-            app_buf['clicks'] += 1
-
-            # Track mouse heatmap (x, y) - global
-            # Bin to 5x5 pixels
-            bx = (x // 5) * 5
-            by = (y // 5) * 5
-            mhm_key = (dh[0], bx, by)
-            self.mouse_heatmap_buffer[mhm_key] = self.mouse_heatmap_buffer.get(mhm_key, 0) + 1
-
-            # App-specific mouse heatmap
-            amhm_key = (dh[0], app, bx, by)
-            self.app_mouse_heatmap_buffer[amhm_key] = self.app_mouse_heatmap_buffer.get(amhm_key, 0) + 1
-
-    def on_scroll(self, delta):
-        self._update_activity_time()  # Update last activity for idle detection
-        with self.lock:
-            dh = self._current_date_hour()
-            buf = self.hourly_input_buffer.setdefault(dh, {'keys': 0, 'clicks': 0, 'distance': 0.0, 'scroll': 0.0})
-            buf['scroll'] += abs(delta) / 120.0
-
-            # App stats
-            app = self.get_active_app_name()
-            app_key = (*dh, app)
-            app_buf = self.hourly_app_stats_buffer.setdefault(app_key, {'keys': 0, 'clicks': 0, 'scrolls': 0, 'distance': 0.0})
-            app_buf['scrolls'] += 1
-
-    def flush_loop(self):
-        while self.running:
-            time.sleep(5)
-            try:
-                self._record_foreground_time()  # Record current foreground time before flush
-                self.flush_stats()
-            except Exception:
-                # CRITICAL: Never let the flush thread die.
-                # A dead flush thread causes all data to accumulate in memory
-                # and eventually be lost or attributed to the wrong date.
-                logger.exception("Error in flush_loop iteration")
 
     def flush_stats(self):
         with self.lock:
+            if not self._metadata_pending and not any(self._buffers()):
+                return
             with self.db.transaction():
                 has_input = bool(self.hourly_input_buffer)
 
                 # Check if foreground time buffer has any non-zero values
                 has_time = any(s > 0 for s in self.foreground_time_buffer.values())
 
-                if not has_input and not has_time:
-                    return
 
                 if has_input:
                     # Aggregate per-date totals for daily_stats
@@ -809,6 +732,12 @@ class ActivityTrack:
                         if seconds > 0:
                             self.db.update_foreground_time(date_part, hour_part, app_name, float(seconds))
 
+                for name, (friendly, path) in self._metadata_pending.items():
+                    self.db.update_app_metadata(name, friendly, path)
+
+            self._metadata_pending.clear()
+            self.last_flush_time = time.time()
+            self.write_error = None
             self.hourly_input_buffer.clear()
             self.hourly_app_stats_buffer.clear()
             self.heatmap_buffer.clear()
