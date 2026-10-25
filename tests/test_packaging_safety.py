@@ -1,11 +1,20 @@
 from pathlib import Path
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from build import validate_package
+from build import build_environment, validate_package
 
 
 class PackagingSafetyTests(unittest.TestCase):
+    def test_build_and_smoke_environments_exclude_unrelated_dll_paths(self):
+        with patch.dict(os.environ, {'PATH': 'C:\\unrelated-tool', 'PYTHONPATH': 'C:\\other-python'}):
+            environment = build_environment(include_python=False)
+            self.assertNotIn('unrelated-tool', environment['PATH'])
+            self.assertNotIn('PYTHONPATH', environment)
+            self.assertEqual(os.environ['PATH'], 'C:\\unrelated-tool')
+
     def test_user_data_is_rejected_even_inside_internal_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

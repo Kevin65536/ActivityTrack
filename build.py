@@ -4,6 +4,7 @@ import datetime
 import hashlib
 from importlib import metadata
 import json
+import os
 from pathlib import Path
 import platform
 import shutil
@@ -55,12 +56,29 @@ def collect_licenses(directory):
                 shutil.copy2(source, target)
 
 
+def build_environment(*, include_python=True):
+    # PyInstaller resolves DLLs through PATH. Keep unrelated desktop-tool DLLs
+    # (notably private UCRT copies) out of this subprocess, without changing the
+    # user's environment or system configuration.
+    environment = os.environ.copy()
+    windows = Path(os.environ.get('SystemRoot', r'C:\Windows'))
+    paths = [windows / 'System32', windows]
+    if include_python:
+        paths[:0] = [Path(sys.executable).parent, Path(sys.base_prefix)]
+    environment['PATH'] = os.pathsep.join(map(str, paths))
+    for variable in ('PYTHONPATH', 'PYTHONHOME', 'QT_PLUGIN_PATH', 'QML2_IMPORT_PATH'):
+        environment.pop(variable, None)
+    return environment
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--allow-dirty', action='store_true', help='Allow local development builds (marked in manifest)')
     args = parser.parse_args(argv)
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    dirty = bool(subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal'], cwd=ROOT, text=True).strip())
+    source_status = subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal'], cwd=ROOT)
+    source_diff = subprocess.check_output(['git', 'diff', '--binary', 'HEAD'], cwd=ROOT)
+    dirty = bool(source_status.strip())
     if dirty and not args.allow_dirty:
         raise RuntimeError('Commit the source first, or use --allow-dirty for a development build')
     if platform.system() != 'Windows' or platform.machine().upper() != 'AMD64':
@@ -72,7 +90,7 @@ def main(argv=None):
     output.mkdir(parents=True, exist_ok=False)
     subprocess.run([sys.executable, '-m', 'PyInstaller', str(ROOT / 'ActivityTrack.spec'),
                     '--distpath', str(output / 'dist'), '--workpath', str(output / 'build'),
-                    '--noconfirm'], cwd=ROOT, check=True)
+                    '--noconfirm'], cwd=ROOT, env=build_environment(), check=True)
     package = output / 'dist' / 'ActivityTrack'
     (package / 'portable.txt').write_text('Keep data beside ActivityTrack.exe. Back up tracker.db and config.json before upgrading.\n', encoding='utf-8')
     for filename in ('config.example.json', 'README.md', 'CHANGELOG.md'):
@@ -90,10 +108,14 @@ def main(argv=None):
     shutil.copy2(package / 'build-info.json', output / 'build-info.json')
     smoke_dir = output / 'smoke'
     result = subprocess.run([str(package / 'ActivityTrack.exe'), '--smoke-test', '--data-dir', str(smoke_dir)],
-                            cwd=output, timeout=90)
+                            cwd=output, env=build_environment(include_python=False), timeout=90)
     report = json.loads((smoke_dir / 'smoke-result.json').read_text(encoding='utf-8'))
     if result.returncode or not report['ok']:
         raise RuntimeError(f'Packaged smoke test failed: {report}')
+    if (subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip() != commit
+            or subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal'], cwd=ROOT) != source_status
+            or subprocess.check_output(['git', 'diff', '--binary', 'HEAD'], cwd=ROOT) != source_diff):
+        raise RuntimeError('Source changed during the build; rebuild from a stable revision')
     archive = output / 'ActivityTrack-Portable.zip'
     with zipfile.ZipFile(archive, 'x', zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
         for path in validate_package(package):
