@@ -110,10 +110,10 @@ class ActivityTrack:
 
     def _process_event(self, event):
         with self.lock:
-            if event.generation != self._generation:
-                return
             if event.kind == 'session':
                 self._handle_session_state(*event.payload, now=event.wall_time, monotonic_time=event.monotonic_time)
+                return
+            if event.generation != self._generation:
                 return
             if self._paused_reasons:
                 return
