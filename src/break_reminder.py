@@ -109,7 +109,9 @@ class BreakReminder:
         """Stop the break reminder monitoring."""
         self._running = False
         if self._thread:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=15.0)
+            if self._thread.is_alive():
+                raise RuntimeError('The break reminder is still stopping; please retry Exit')
             self._thread = None
     
     def reset_timer(self):
@@ -154,7 +156,7 @@ class BreakReminder:
         
         Uses the tracker's idle detection which is based on actual input events.
         """
-        return self.tracker.is_idle
+        return self.tracker.is_idle or self.tracker.get_health_snapshot()['paused']
     
     def _is_genuine_activity(self) -> bool:
         """Detect if recent activity appears to be from a real user vs automation.

@@ -1,3 +1,4 @@
+from .recording_status import coherent_refresh
 """
 Screen Time Widget - Display application foreground time statistics.
 """
@@ -628,6 +629,7 @@ class ScreenTimeWidget(QWidget):
         """Handle category filter selection change."""
         self.refresh_data()
     
+    @coherent_refresh
     def refresh_data(self):
         """Refresh all data displays."""
         start_date, end_date = self.time_selector.get_date_range()

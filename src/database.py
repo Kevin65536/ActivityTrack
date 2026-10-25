@@ -3,12 +3,20 @@ import datetime
 import os
 import sys
 import threading
+from contextlib import contextmanager
+from pathlib import Path
+
+# Explicit adapters avoid the deprecated implicit adapters on Python 3.12+.
+sqlite3.register_adapter(datetime.date, lambda value: value.isoformat())
 
 class Database:
     def __init__(self, db_path="tracker.db"):
         self.db_path = self._resolve_db_path(db_path)
         self._conn = None
         self._lock = threading.RLock()
+        self._transaction_depth = 0
+        self._transaction_failed = False
+        self._closed = False
         self.init_db()
 
     def _resolve_db_path(self, db_path):
@@ -26,159 +34,141 @@ class Database:
         return os.path.join(base_dir, db_path)
 
     def get_connection(self):
-        """Return the persistent connection, creating it if needed.
-
-        The connection uses WAL journal mode for better concurrency and
-        is shared across all calls.  A threading lock serialises access
-        so the single connection is safe to use from multiple threads.
-        """
-        if self._conn is None:
-            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            # WAL mode allows readers and one writer concurrently and is
-            # far more resilient to corruption than the default rollback journal.
-            self._conn.execute('PRAGMA journal_mode=WAL')
-            self._conn.execute('PRAGMA busy_timeout=5000')
-        return self._conn
+        """Writer connection. Callers must hold transaction() or _lock."""
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Database is closed")
+            if self._conn is None:
+                self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+                self._conn.execute('PRAGMA journal_mode=WAL')
+                self._conn.execute('PRAGMA busy_timeout=5000')
+            return self._conn
 
     def close(self):
-        """Explicitly close the persistent connection."""
-        if self._conn is not None:
-            try:
+        """Close after worker shutdown; a late call cannot reopen the database."""
+        with self._lock:
+            if self._transaction_depth:
+                raise RuntimeError("Cannot close a database during a transaction")
+            if self._conn is not None:
                 self._conn.close()
-            except Exception:
-                pass
-            self._conn = None
+                self._conn = None
+            self._closed = True
+
+    @contextmanager
+    def transaction(self):
+        """Serialize a batch and commit it atomically, including nested updates."""
+        with self._lock:
+            conn = self.get_connection()
+            outer = self._transaction_depth == 0
+            if outer:
+                conn.execute("BEGIN IMMEDIATE")
+                self._transaction_failed = False
+            self._transaction_depth += 1
+            try:
+                yield conn
+            except BaseException:
+                self._transaction_failed = True
+                if outer:
+                    conn.rollback()
+                raise
+            else:
+                if outer:
+                    if self._transaction_failed:
+                        conn.rollback()
+                        raise RuntimeError("A nested database update failed; batch rolled back")
+                    try:
+                        conn.commit()
+                    except BaseException:
+                        conn.rollback()
+                        raise
+            finally:
+                self._transaction_depth -= 1
+
+    @contextmanager
+    def read_connection(self):
+        """An isolated, read-only snapshot; export errors cannot affect writers."""
+        if self._closed:
+            raise RuntimeError("Database is closed")
+        if self.db_path == ":memory:":
+            conn = sqlite3.connect(":memory:")
+            try:
+                with self._lock:
+                    if self._transaction_depth:
+                        raise RuntimeError("Cannot snapshot an uncommitted in-memory database")
+                    self.get_connection().backup(conn)
+            except BaseException:
+                conn.close()
+                raise
+        else:
+            uri = Path(self.db_path).resolve().as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True)
+        try:
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("BEGIN")
+            yield conn
+        finally:
+            conn.close()
+
+    def clear_all_data(self):
+        """Delete statistics and identifying metadata together."""
+        with self.transaction() as conn:
+            conn.execute("PRAGMA secure_delete=ON")
+            for table in self._dated_tables() + ("app_metadata",):
+                conn.execute(f"DELETE FROM {table}")
+        with self._lock:
+            self.get_connection().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    @staticmethod
+    def _dated_tables():
+        return ("daily_stats", "app_stats", "heatmap_data", "mouse_heatmap_data",
+                "app_heatmap_data", "app_mouse_heatmap_data", "hourly_app_stats",
+                "app_foreground_time")
+
+    def prune_before(self, cutoff):
+        """Drop all activity older than cutoff and orphaned application paths."""
+        with self.transaction() as conn:
+            before = conn.total_changes
+            conn.execute("PRAGMA secure_delete=ON")
+            for table in self._dated_tables():
+                conn.execute(f"DELETE FROM {table} WHERE date < ?", (cutoff,))
+            conn.execute("""DELETE FROM app_metadata WHERE app_name NOT IN (
+                SELECT app_name FROM app_stats UNION SELECT app_name FROM hourly_app_stats
+                UNION SELECT app_name FROM app_foreground_time
+                UNION SELECT app_name FROM app_heatmap_data
+                UNION SELECT app_name FROM app_mouse_heatmap_data)""")
+            deleted = conn.total_changes - before
+        return deleted
 
     def init_db(self):
-        conn = self.get_connection()
-        with self._lock:
-            cursor = conn.cursor()
-            
-            # Daily stats table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS daily_stats (
-                    date DATE PRIMARY KEY,
-                    key_count INTEGER DEFAULT 0,
-                    mouse_click_count INTEGER DEFAULT 0,
-                    mouse_distance REAL DEFAULT 0.0,
-                    scroll_distance REAL DEFAULT 0.0
-                )
-            ''')
-            
-            # App stats table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS app_stats (
-                    date DATE,
-                    app_name TEXT,
-                    key_count INTEGER DEFAULT 0,
-                    PRIMARY KEY (date, app_name)
-                )
-            ''')
-            
-            # Heatmap data table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS heatmap_data (
-                    date DATE,
-                    key_code INTEGER,
-                    count INTEGER DEFAULT 0,
-                    PRIMARY KEY (date, key_code)
-                )
-            ''')
-            
-            # Mouse Heatmap data table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS mouse_heatmap_data (
-                    date DATE,
-                    x INTEGER,
-                    y INTEGER,
-                    count INTEGER DEFAULT 0,
-                    PRIMARY KEY (date, x, y)
-                )
-            ''')
-            
-            # App-specific keyboard heatmap data table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS app_heatmap_data (
-                    date DATE,
-                    app_name TEXT,
-                    key_code INTEGER,
-                    count INTEGER DEFAULT 0,
-                    PRIMARY KEY (date, app_name, key_code)
-                )
-            ''')
-            
-            # App-specific mouse heatmap data table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS app_mouse_heatmap_data (
-                    date DATE,
-                    app_name TEXT,
-                    x INTEGER,
-                    y INTEGER,
-                    count INTEGER DEFAULT 0,
-                    PRIMARY KEY (date, app_name, x, y)
-                )
-            ''')
-            conn.commit()
+        """Create or migrate the complete schema in one transaction."""
+        definitions = (
+            "daily_stats (date DATE PRIMARY KEY, key_count INTEGER DEFAULT 0, mouse_click_count INTEGER DEFAULT 0, mouse_distance REAL DEFAULT 0, scroll_distance REAL DEFAULT 0)",
+            "app_stats (date DATE, app_name TEXT, key_count INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, scrolls REAL DEFAULT 0, distance REAL DEFAULT 0, PRIMARY KEY (date, app_name))",
+            "heatmap_data (date DATE, key_code INTEGER, count INTEGER DEFAULT 0, PRIMARY KEY (date, key_code))",
+            "mouse_heatmap_data (date DATE, x INTEGER, y INTEGER, count INTEGER DEFAULT 0, PRIMARY KEY (date, x, y))",
+            "app_heatmap_data (date DATE, app_name TEXT, key_code INTEGER, count INTEGER DEFAULT 0, PRIMARY KEY (date, app_name, key_code))",
+            "app_mouse_heatmap_data (date DATE, app_name TEXT, x INTEGER, y INTEGER, count INTEGER DEFAULT 0, PRIMARY KEY (date, app_name, x, y))",
+            "hourly_app_stats (date DATE, hour INTEGER, app_name TEXT, key_count INTEGER DEFAULT 0, clicks INTEGER DEFAULT 0, scrolls REAL DEFAULT 0, distance REAL DEFAULT 0, PRIMARY KEY (date, hour, app_name))",
+            "app_metadata (app_name TEXT PRIMARY KEY, friendly_name TEXT, exe_path TEXT)",
+            "app_foreground_time (date DATE, hour INTEGER, app_name TEXT, duration_seconds REAL DEFAULT 0, PRIMARY KEY (date, hour, app_name))",
+        )
+        with self.transaction() as conn:
+            if conn.execute('PRAGMA user_version').fetchone()[0] > 1:
+                raise RuntimeError('This database was created by a newer ActivityTrack version')
+            for definition in definitions:
+                conn.execute("CREATE TABLE IF NOT EXISTS " + definition)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(app_stats)")}
+            for name, kind in (("clicks", "INTEGER"), ("scrolls", "REAL"), ("distance", "REAL")):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE app_stats ADD COLUMN {name} {kind} DEFAULT 0")
+            # Existing SQLite INTEGER-affinity duration columns also accept REAL
+            # values, so old databases retain all rows without a table rebuild.
+            conn.execute("PRAGMA user_version=1")
 
-        # Migration for new columns in app_stats
-        self._migrate_app_stats_schema()
-            
-        with self._lock:
-            cursor = conn.cursor()
-
-            # Hourly App Stats table for granular tracking
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS hourly_app_stats (
-                    date DATE,
-                    hour INTEGER,
-                    app_name TEXT,
-                    key_count INTEGER DEFAULT 0,
-                    clicks INTEGER DEFAULT 0,
-                    scrolls INTEGER DEFAULT 0,
-                    distance REAL DEFAULT 0.0,
-                    PRIMARY KEY (date, hour, app_name)
-                )
-            ''')
-
-            # Ensure app_metadata table exists
-            self._migrate_app_metadata_schema()
-
-            # App foreground time table for screen time tracking
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS app_foreground_time (
-                    date DATE,
-                    hour INTEGER,
-                    app_name TEXT,
-                    duration_seconds INTEGER DEFAULT 0,
-                    PRIMARY KEY (date, hour, app_name)
-                )
-            ''')
-
-            conn.commit()
-
-    def _migrate_app_stats_schema(self):
-        """Add new columns to app_stats if they don't exist."""
-        with self._lock:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            try:
-                # Check if columns exist
-                cursor.execute("PRAGMA table_info(app_stats)")
-                columns = [info[1] for info in cursor.fetchall()]
-                
-                if 'clicks' not in columns:
-                    cursor.execute("ALTER TABLE app_stats ADD COLUMN clicks INTEGER DEFAULT 0")
-                if 'scrolls' not in columns:
-                    cursor.execute("ALTER TABLE app_stats ADD COLUMN scrolls INTEGER DEFAULT 0")
-                if 'distance' not in columns:
-                    cursor.execute("ALTER TABLE app_stats ADD COLUMN distance INTEGER DEFAULT 0")
-                conn.commit()
-            except sqlite3.Error as e:
-                print(f"Migration warning: {e}")
 
     def update_stats(self, date, key_count=0, click_count=0, distance=0.0, scroll=0.0):
-        with self._lock:
-            conn = self.get_connection()
+        with self.transaction() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO daily_stats (date, key_count, mouse_click_count, mouse_distance, scroll_distance)
@@ -189,11 +179,9 @@ class Database:
                     mouse_distance = mouse_distance + excluded.mouse_distance,
                     scroll_distance = scroll_distance + excluded.scroll_distance
             ''', (date, key_count, click_count, distance, scroll))
-            conn.commit()
 
     def update_app_stats(self, date, app_name, key_count=0, click_count=0, scroll_count=0, distance=0):
-        with self._lock:
-            conn = self.get_connection()
+        with self.transaction() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO app_stats (date, app_name, key_count, clicks, scrolls, distance)
@@ -204,11 +192,9 @@ class Database:
                     scrolls = scrolls + excluded.scrolls,
                     distance = distance + excluded.distance
             ''', (date, app_name, key_count, click_count, scroll_count, distance))
-            conn.commit()
 
     def update_hourly_app_stats(self, date, hour, app_name, key_count=0, clicks=0, scrolls=0, distance=0.0):
-        with self._lock:
-            conn = self.get_connection()
+        with self.transaction() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO hourly_app_stats (date, hour, app_name, key_count, clicks, scrolls, distance)
@@ -219,11 +205,9 @@ class Database:
                     scrolls = scrolls + excluded.scrolls,
                     distance = distance + excluded.distance
             ''', (date, hour, app_name, key_count, clicks, scrolls, distance))
-            conn.commit()
 
     def update_heatmap(self, date, key_code, count):
-        with self._lock:
-            conn = self.get_connection()
+        with self.transaction() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO heatmap_data (date, key_code, count)
@@ -232,11 +216,8 @@ class Database:
                     count = count + excluded.count
             ''', (date, key_code, count))
 
-            conn.commit()
-
     def update_mouse_heatmap(self, date, x, y, count):
-        with self._lock:
-            conn = self.get_connection()
+        with self.transaction() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO mouse_heatmap_data (date, x, y, count)
@@ -244,12 +225,10 @@ class Database:
                 ON CONFLICT(date, x, y) DO UPDATE SET
                     count = count + excluded.count
             ''', (date, x, y, count))
-            conn.commit()
 
     def update_app_heatmap(self, date, app_name, key_code, count):
         """Update app-specific keyboard heatmap data."""
-        with self._lock:
-            conn = self.get_connection()
+        with self.transaction() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO app_heatmap_data (date, app_name, key_code, count)
@@ -257,12 +236,10 @@ class Database:
                 ON CONFLICT(date, app_name, key_code) DO UPDATE SET
                     count = count + excluded.count
             ''', (date, app_name, key_code, count))
-            conn.commit()
 
     def update_app_mouse_heatmap(self, date, app_name, x, y, count):
         """Update app-specific mouse heatmap data."""
-        with self._lock:
-            conn = self.get_connection()
+        with self.transaction() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO app_mouse_heatmap_data (date, app_name, x, y, count)
@@ -270,7 +247,6 @@ class Database:
                 ON CONFLICT(date, app_name, x, y) DO UPDATE SET
                     count = count + excluded.count
             ''', (date, app_name, x, y, count))
-            conn.commit()
 
     def get_today_stats(self):
         today = datetime.date.today()
@@ -690,65 +666,31 @@ class Database:
             ''', (start_date, end_date))
             return [row[0] for row in cursor.fetchall()]
 
-    def _migrate_app_metadata_schema(self):
-        with self._lock:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS app_metadata (
-                    app_name TEXT PRIMARY KEY,
-                    friendly_name TEXT,
-                    exe_path TEXT
-                )
-            ''')
-            conn.commit()
 
     def update_app_metadata(self, app_name, friendly_name, exe_path):
-        """Update or insert app metadata."""
-        # Ensure schema exists (lazy init or call in init_db)
-        # Calling here is safe but a bit redundant, usually call in init_db.
-        # But since we are patching, let's call it once in init_db or here.
-        # Let's add it to init_db actually, but since I am editing here...
-        # I'll rely on init_db calling it if I add it there, or just call it.
-        # Let's just execute the create if not exists here to be safe for this patch.
-        with self._lock:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS app_metadata (
-                    app_name TEXT PRIMARY KEY,
-                    friendly_name TEXT,
-                    exe_path TEXT
-                )
-            ''')
-            cursor.execute('''
-                INSERT INTO app_metadata (app_name, friendly_name, exe_path)
-                VALUES (?, ?, ?)
-                ON CONFLICT(app_name) DO UPDATE SET
-                    friendly_name = excluded.friendly_name,
-                    exe_path = excluded.exe_path
-            ''', (app_name, friendly_name, exe_path))
-            conn.commit()
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT INTO app_metadata (app_name, friendly_name, exe_path) VALUES (?, ?, ?) "
+                "ON CONFLICT(app_name) DO UPDATE SET friendly_name=excluded.friendly_name, exe_path=excluded.exe_path",
+                (app_name, friendly_name, exe_path),
+            )
 
-    def get_app_metadata_dict(self):
-        """Return dict {app_name: {'friendly_name': ..., 'exe_path': ...}}."""
+    def get_app_metadata_dict(self, connection=None):
+        """Read metadata in the export's snapshot when a connection is supplied."""
+        def read(conn):
+            return {name: {'friendly_name': friendly, 'exe_path': path}
+                    for name, friendly, path in conn.execute(
+                        "SELECT app_name, friendly_name, exe_path FROM app_metadata")}
+        if connection is not None:
+            return read(connection)
         with self._lock:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            # Check table exists first
-            try:
-                cursor.execute("SELECT app_name, friendly_name, exe_path FROM app_metadata")
-                rows = cursor.fetchall()
-                return {row[0]: {'friendly_name': row[1], 'exe_path': row[2]} for row in rows}
-            except sqlite3.OperationalError:
-                return {}
+            return read(self.get_connection())
 
     # ==================== Screen Time / Foreground Time Methods ====================
     
     def update_foreground_time(self, date, hour, app_name, duration_seconds):
         """Update app foreground time for a specific date and hour."""
-        with self._lock:
-            conn = self.get_connection()
+        with self.transaction() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO app_foreground_time (date, hour, app_name, duration_seconds)
@@ -756,7 +698,6 @@ class Database:
                 ON CONFLICT(date, hour, app_name) DO UPDATE SET
                     duration_seconds = duration_seconds + excluded.duration_seconds
             ''', (date, hour, app_name, duration_seconds))
-            conn.commit()
 
     def get_foreground_time_by_app(self, start_date, end_date):
         """Get total foreground time per app within date range. Returns list of (app_name, total_seconds)."""

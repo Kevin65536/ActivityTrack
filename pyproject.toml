@@ -1,0 +1,28 @@
+[project]
+name = "activitytrack"
+version = "0.2.16"
+description = "Local Windows input and screen-time statistics"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "PySide6==6.12.0",
+    "pywin32==312",
+    "psutil==7.2.2",
+    "matplotlib==3.11.2",
+    "numpy==2.5.4",
+    "scipy==1.18.1",
+    "pillow==13.0.0",
+]
+
+[dependency-groups]
+dev = ["pyinstaller==6.22.3", "pip-audit==2.10.1", "ruff==0.17.2"]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'win32' and platform_machine == 'AMD64'"]
+
+[tool.ruff]
+target-version = "py313"
+extend-exclude = ["outputs", "dist", "build", "venv"]
+
+[tool.ruff.lint]
+select = ["F63", "F7", "F82"]

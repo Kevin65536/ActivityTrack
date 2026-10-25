@@ -9,8 +9,10 @@ from .history_chart import HistoryChartWidget
 from .app_stats_widget import AppStatsWidget
 from .pie_chart import AppPieChartWidget
 from .settings import SettingsWidget
+from .recording_status import coherent_refresh, health_message
 from .screen_time_widget import ScreenTimeWidget
 from ..config import Config
+from ..version import __version__
 from ..i18n import tr, get_i18n, set_language
 import datetime
 
@@ -230,11 +232,13 @@ class StatCard(QFrame):
 
 
 class MainWindow(QMainWindow):
+    quit_requested = Signal()
+
     def __init__(self, tracker, config: Config = None):
         super().__init__()
         self.tracker = tracker
         self.config = config or Config()
-        self.setWindowTitle(tr('app.title'))
+        self.setWindowTitle(f"{tr('app.title')} {__version__}")
         self.resize(900, 650)
         
         # Initialize language from config
@@ -291,7 +295,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.screen_time_tab, tr('tab.screen_time'))
         
         # Settings Tab
-        self.settings_tab = SettingsWidget(self.config, self.tracker.db)
+        self.settings_tab = SettingsWidget(self.config, self.tracker.db, self.tracker)
         self.settings_tab.theme_changed.connect(self.on_theme_changed)
         self.settings_tab.keyboard_layout_changed.connect(self.on_keyboard_layout_changed)
         self.settings_tab.language_changed.connect(self.on_language_changed)
@@ -304,20 +308,35 @@ class MainWindow(QMainWindow):
         # Hook after all tabs are created
         self.tabs.currentChanged.connect(self.on_tab_changed)
         
+        self.health_label = QLabel()
+        self.health_label.setWordWrap(True)
+        self.layout.addWidget(self.health_label)
+        self.session_events = None
         # Timer to update UI
         self.timer = QTimer()
+        self.timer.timeout.connect(self.update_health)
         self.timer.timeout.connect(self.update_stats)
         self.timer.start(1000) # Update every second
         
         # Initial update
+        self.update_health()
         self.update_stats()
+
+    def update_health(self):
+        health = self.tracker.get_health_snapshot()
+        message, warning = health_message(health, self.config.language == "zh")
+        if self.session_events and self.session_events.error:
+            message += " | " + ("锁屏检测暂不可用" if self.config.language == "zh" else "Session notifications unavailable")
+            warning = True
+        self.health_label.setText(message)
+        self.health_label.setStyleSheet("color: #ffb74d;" if warning else "color: #a5d6a7;")
+        self.health_label.setToolTip(str(health))
 
     def on_tab_changed(self, index):
         try:
             title = self.tabs.tabText(index)
         except Exception:
             title = str(index)
-        print(f"[DEBUG] Tab changed to {index} ({title})")
         # Immediately refresh apps tab when selected
         if self.tabs.widget(index) == self.apps_tab:
             try:
@@ -508,7 +527,6 @@ class MainWindow(QMainWindow):
         self.update_heatmap()
 
     def setup_apps(self):
-        print("[DEBUG] setup_apps: Starting...")
         try:
             layout = QVBoxLayout(self.apps_tab)
             layout.setSpacing(20)
@@ -611,7 +629,6 @@ class MainWindow(QMainWindow):
                 btn.setStyleSheet(unified_style)
             
             layout.addLayout(header)
-            print("[DEBUG] setup_apps: Header created")
             
             # Content: stacked views (Chart or Table)
             self.apps_stack = QStackedWidget()
@@ -624,7 +641,6 @@ class MainWindow(QMainWindow):
             self.apps_stack.addWidget(self.app_stats_widget)
 
             layout.addWidget(self.apps_stack, 1)
-            print("[DEBUG] setup_apps: Completed successfully")
         except Exception as e:
             print(f"[ERROR] setup_apps failed: {e}")
             import traceback
@@ -644,15 +660,13 @@ class MainWindow(QMainWindow):
         # Refresh chart with new metric
         self.app_pie_chart.refresh_display()
 
+    @coherent_refresh
     def update_apps(self):
-        print("[DEBUG] update_apps: Starting...")
         try:
             start_date, end_date = self.apps_time_selector.get_date_range()
-            print(f"[DEBUG] update_apps: date range = {start_date} to {end_date}")
             
             # Fetch from DB
             stats = self.tracker.db.get_app_stats_summary(limit=100, start_date=start_date, end_date=end_date)
-            print(f"[DEBUG] update_apps: got {len(stats) if stats else 0} stats from DB")
             
             # Convert to list of tuples if not already (fetchall returns list of tuples)
             # Stats are (app_name, keys, clicks, scrolls, distance)
@@ -703,15 +717,10 @@ class MainWindow(QMainWindow):
                 clean_stats.sort(key=lambda x: x[1], reverse=True)
                 
             # PROPOSED: Fetch Metadata
-            print("[DEBUG] update_apps: Fetching metadata...")
             metadata = self.tracker.db.get_app_metadata_dict()
-            print(f"[DEBUG] update_apps: got {len(metadata) if metadata else 0} metadata entries")
             
-            print("[DEBUG] update_apps: Updating table...")
             self.app_stats_widget.update_data(clean_stats, metadata)
-            print("[DEBUG] update_apps: Updating pie chart...")
             self.app_pie_chart.update_data(clean_stats, metadata)
-            print("[DEBUG] update_apps: Completed successfully")
         except Exception as e:
             print(f"[ERROR] update_apps failed: {e}")
             import traceback
@@ -747,6 +756,7 @@ class MainWindow(QMainWindow):
         """Handle app filter selection change in heatmap."""
         self.update_heatmap()
 
+    @coherent_refresh
     def refresh_heatmap_app_list(self):
         """Refresh the app list in heatmap filter dropdown."""
         current_text = self.heatmap_app_filter.currentText()
@@ -783,6 +793,7 @@ class MainWindow(QMainWindow):
         # Get userData (raw app_name)
         return self.heatmap_app_filter.itemData(idx)
 
+    @coherent_refresh
     def update_stats(self):
         # Get date range from selector
         start_date, end_date = self.time_selector.get_date_range()
@@ -834,6 +845,7 @@ class MainWindow(QMainWindow):
         if self.tabs.currentWidget() == self.screen_time_tab:
             self.screen_time_tab.refresh_data()
 
+    @coherent_refresh
     def update_heatmap(self):
         """Update keyboard heatmap based on heatmap tab's time selector and app filter."""
         start_date, end_date = self.heatmap_time_selector.get_date_range()
@@ -911,12 +923,15 @@ class MainWindow(QMainWindow):
         """Handle language change from settings."""
         # The actual UI text update will happen on next app restart
         # But we can update the window title immediately
-        self.setWindowTitle(tr('app.title'))
+        self.setWindowTitle(f"{tr('app.title')} {__version__}")
     
     def on_settings_changed(self):
         """Handle general settings changes."""
         # Sync idle timeout to tracker
         self.tracker.set_idle_timeout(self.config.idle_timeout_seconds)
+        if self.tracker.retention_days != self.config.data_retention_days:
+            self.tracker.set_retention_days(self.config.data_retention_days)
+        self.update_stats()
 
     def closeEvent(self, event):
         """Handle window close event based on minimize_to_tray setting."""
@@ -925,6 +940,5 @@ class MainWindow(QMainWindow):
             self.hide()
         else:
             # Actually quit the application
-            event.accept()
-            from PySide6.QtWidgets import QApplication
-            QApplication.instance().quit()
+            event.ignore()
+            self.quit_requested.emit()

@@ -30,7 +30,7 @@ A privacy-focused, lightweight input tracking tool for Windows. Inspired by What
 ## Key Highlights
 
 ✨ **6 Comprehensive Tabs** - Dashboard, Heatmap, Applications, History, Screen Time, and Settings  
-🎨 **5 Heatmap Themes** - Classic, Fire, Ocean, Purple, and Matrix color schemes  
+🎨 **6 Heatmap Themes** - Default, Fire, Ocean, Monochrome, Viridis, and Plasma<br>
 📊 **Advanced Analytics** - Timeline and Insights charts with weekday/hourly patterns  
 ⏱️ **Screen Time Tracking** - Monitor foreground application usage time with idle detection  
 🎯 **Per-App Filtering** - Filter heatmaps and statistics by specific applications  
@@ -42,7 +42,7 @@ A privacy-focused, lightweight input tracking tool for Windows. Inspired by What
 
 ### 📊 Input Tracking
 - **Keyboard Heatmap**: Visualize your most used keys with a color-coded keyboard overlay
-  - Multiple color themes (Classic, Fire, Ocean, Purple, Matrix)
+  - Six color themes (Default, Fire, Ocean, Monochrome, Viridis, Plasma)
   - Time range filtering (Today, Yesterday, Week, Month, Year, All Time)
   - Per-application keyboard heatmap filtering
   - Keyboard layout support for different physical keyboard configurations
@@ -92,13 +92,8 @@ A privacy-focused, lightweight input tracking tool for Windows. Inspired by What
 - **Keyboard Layout**: Configure keyboard layout for accurate heatmap display
 - **Startup Options**: Start with Windows automatically
 - **Tray Behavior**: Minimize to system tray option
-- **Data Management**: Configure data retention period (7-365 days or forever)
-- **Theme Customization**: Choose from 5 heatmap color themes with live preview
-  - Classic (Blue → Green → Yellow → Red)
-  - Fire (Dark Red → Red → Orange → Yellow)
-  - Ocean (Dark Blue → Cyan → Blue → Light Blue)
-  - Purple (Dark Purple → Purple → Pink → Light Pink)
-  - Matrix (Dark Green → Green → Light Green → White)
+- **Data Management**: Keep the most recent 1–3650 local calendar days, or keep forever
+- **Theme Customization**: Six heatmap themes with live previews: Default, Fire, Ocean, Monochrome, Viridis, and Plasma.
 
 ### 🔒 Privacy First
 - All data is stored locally in a SQLite database (`tracker.db`)
@@ -113,7 +108,7 @@ Pre-compiled Windows executables are available in the [Releases](https://github.
 ## Requirements
 
 - Windows 10/11 (64-bit recommended)
-- Python 3.10+
+- Python 3.13.17 for source/build workflows (not needed for the portable release)
 
 ### Dependencies
 - `PySide6` (UI Framework)
@@ -125,17 +120,44 @@ Pre-compiled Windows executables are available in the [Releases](https://github.
 
 ## Installation
 
-1.  Clone the repository or download the source code.
-2.  Open a terminal in the `ActivityTrack` directory.
-3.  Create a virtual environment (optional but recommended):
-    ```powershell
-    python -m venv venv
-    .\venv\Scripts\activate
-    ```
-4.  Install dependencies:
-    ```powershell
-    pip install -r requirements.txt
-    ```
+For the portable release, extract `ActivityTrack-Portable.zip` into a writable folder and run `ActivityTrack.exe`. No Python installation is required.
+
+For source development, install [uv](https://docs.astral.sh/uv/) and run:
+
+```powershell
+uv sync --locked
+uv run python main.py
+```
+
+Python and all direct/transitive dependencies are pinned by `.python-version` and `uv.lock`. `requirements.txt` is a hashed export of the runtime dependencies for pip users.
+
+## Upgrading and data locations
+
+Exit ActivityTrack from its tray menu, back up the whole existing folder, then replace the executable and `_internal` folder with the release contents. Keep your `tracker.db` and `config.json`; the release only contains a clean `config.example.json` template. Do not overwrite a running executable or copy a live database without its SQLite WAL state.
+
+The portable marker (`portable.txt`) keeps data beside the executable. Existing installations with `tracker.db` or `config.json` beside the executable continue using that location. A fresh executable without that marker uses `%LOCALAPPDATA%/ActivityTrack`. Source runs use the repository directory. `--data-dir PATH` or `ACTIVITYTRACK_DATA_DIR` overrides the location. Only one process may record to a given data directory.
+
+**v0.2.16 starts enforcing the configured retention period immediately and once per local day.** The default is 365 days. Choose Forever before upgrading if you need to retain all history, or preserve it in a backup. The retained period includes today. Older inflated screen-time records cannot be reconstructed from aggregate statistics, so this update preserves retained historical values and fixes future recording.
+
+Closing the window minimizes to the tray by default. Disable that setting to save and exit on close. A failed save keeps the app open for a retry. The status footer reports hook failures, delayed recording, dropped events, pauses, and write failures. Diagnostics rotate in `activitytrack.log` (three backups); fatal Python errors go to `crash.log`.
+
+## Validation and builds
+
+```powershell
+uv run ruff check .
+uv run python -m unittest discover -s tests -v
+uv run python main.py --smoke-test --smoke-hooks --data-dir outputs/smoke
+uv run pip-audit --strict --no-deps --disable-pip -r requirements.txt
+uv run python build.py
+```
+
+`build.py` requires committed source and writes a new directory under `outputs/releases/`. It uses the active Python interpreter, runs the packaged executable through all six tabs, checks SQLite integrity and orderly shutdown, and only then creates the portable ZIP, build manifest, and SHA-256 checksum. It never deletes or repackages an existing installation. `--allow-dirty` is available for local development builds and marks the manifest accordingly.
+
+Windows CI runs the tests, runtime dependency advisory audit, source smoke test and packaged smoke test. To regenerate the pip export after a dependency update:
+
+```powershell
+uv export --locked --no-dev --format requirements-txt --output-file requirements.txt --no-emit-project
+```
 
 ## Usage
 
@@ -172,7 +194,11 @@ This tool uses low-level system hooks (`SetWindowsHookEx`) to count keystrokes a
 - Screenshot or window content
 - Network activity
 
-All data is stored locally in `tracker.db` in the application directory. You have full control over data retention through the Settings page.
+Activity counts, application executable paths/friendly names, and screen-time aggregates are stored locally in `tracker.db` in the data directory described above. Clear Data removes all recorded tables and application metadata, discards queued/buffered old activity, then begins a fresh recording period. Manually configured app groups, exported files and backups are separate and remain under your control.
+
+CSV exports quote all fields and prefix formula-like text with an apostrophe. JSON exports preserve original text. Spreadsheet applications vary; do not remove the CSV text prefix when opening untrusted application metadata. Exports use a separate SQLite read snapshot and replace destination files only after a successful write.
+
+Lock, disconnect and suspend messages pause screen-time accrual. Input hooks only copy events into a bounded queue; process lookups, metadata reads and database writes run on a worker. The idle timeout counts its initial grace period as active time and later time as idle, without counting the same interval twice. Injected keyboard/mouse events are ignored.
 
 ## License
 

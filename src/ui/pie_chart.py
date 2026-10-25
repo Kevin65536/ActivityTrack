@@ -45,7 +45,6 @@ class PieChartWidget(QWidget):
         # Guard against None
         app_data = app_data or []
         metadata = metadata or {}
-        print(f"[DEBUG] PieChartWidget.update_data: received {len(app_data)} items")
 
         metric_idx = {'keys': 1, 'clicks': 2, 'scrolls': 3, 'distance': 4}
         idx = metric_idx.get(self.metric, 1)

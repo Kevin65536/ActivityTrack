@@ -3,11 +3,34 @@ Data export module for ActivityTrack.
 Provides CSV, JSON, and image export functionality.
 """
 
+import logging
+import unicodedata
+from .fileio import atomic_text_file
 import csv
 import json
 import os
 import datetime
 from typing import Optional, Dict, List, Any, Tuple
+
+
+def csv_text(value):
+    """Keep text literal in spreadsheets, including leading controls/fullwidth operators."""
+    if not isinstance(value, str):
+        return value
+    normalized = unicodedata.normalize('NFKC', value)
+    visible = normalized.lstrip()
+    if (visible.startswith(('=', '+', '-', '@'))
+            or any(ord(char) < 32 for char in normalized)):
+        return "'" + value
+    return value
+
+
+class SafeCsvWriter:
+    def __init__(self, stream):
+        self.writer = csv.writer(stream, quoting=csv.QUOTE_ALL)
+
+    def writerow(self, row):
+        self.writer.writerow([csv_text(value) for value in row])
 
 
 class DataExporter:
@@ -20,6 +43,7 @@ class DataExporter:
             database: Database instance to export data from
         """
         self.db = database
+        self.last_error = None
     
     def _get_date_range(self, range_type: str) -> Tuple[Optional[datetime.date], Optional[datetime.date]]:
         """Convert range type string to date range.
@@ -55,7 +79,7 @@ class DataExporter:
             True if successful, False otherwise
         """
         try:
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 if start_date and end_date:
@@ -74,8 +98,8 @@ class DataExporter:
                 
                 rows = cursor.fetchall()
                 
-                with open(filepath, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
+                with atomic_text_file(filepath, newline='') as f:
+                    writer = SafeCsvWriter(f)
                     writer.writerow(['Date', 'Keystrokes', 'Mouse Clicks', 'Mouse Distance (m)', 'Scroll Distance'])
                     for row in rows:
                         # Ensure date is formatted as ISO string (YYYY-MM-DD)
@@ -86,9 +110,11 @@ class DataExporter:
                             date_str = str(date_val)
                         writer.writerow([date_str, row[1], row[2], row[3], row[4]])
                 
-                return True
+                self.last_error = None
+            return True
         except Exception as e:
-            print(f"Export error: {e}")
+            self.last_error = str(e)
+            logging.getLogger(__name__).exception('Export failed')
             return False
     
     def export_app_stats_csv(self, filepath: str, start_date: Optional[datetime.date] = None,
@@ -104,7 +130,7 @@ class DataExporter:
             True if successful, False otherwise
         """
         try:
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 if start_date and end_date:
@@ -136,19 +162,21 @@ class DataExporter:
                 rows = cursor.fetchall()
                 
                 # Get metadata for friendly names
-                metadata = self.db.get_app_metadata_dict()
+                metadata = self.db.get_app_metadata_dict(connection=conn)
                 
-                with open(filepath, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
+                with atomic_text_file(filepath, newline='') as f:
+                    writer = SafeCsvWriter(f)
                     writer.writerow(['Application', 'Friendly Name', 'Keystrokes', 'Clicks', 'Scrolls', 'Distance (m)'])
                     for row in rows:
                         app_name = row[0]
                         friendly_name = metadata.get(app_name, {}).get('friendly_name', '')
                         writer.writerow([app_name, friendly_name, row[1] or 0, row[2] or 0, row[3] or 0, row[4] or 0])
                 
-                return True
+                self.last_error = None
+            return True
         except Exception as e:
-            print(f"Export error: {e}")
+            self.last_error = str(e)
+            logging.getLogger(__name__).exception('Export failed')
             return False
     
     def export_heatmap_csv(self, filepath: str, start_date: Optional[datetime.date] = None,
@@ -164,7 +192,7 @@ class DataExporter:
             True if successful, False otherwise
         """
         try:
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 if start_date and end_date:
@@ -185,15 +213,17 @@ class DataExporter:
                 
                 rows = cursor.fetchall()
                 
-                with open(filepath, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
+                with atomic_text_file(filepath, newline='') as f:
+                    writer = SafeCsvWriter(f)
                     writer.writerow(['Key Code (Scan Code)', 'Press Count'])
                     for row in rows:
                         writer.writerow(row)
                 
-                return True
+                self.last_error = None
+            return True
         except Exception as e:
-            print(f"Export error: {e}")
+            self.last_error = str(e)
+            logging.getLogger(__name__).exception('Export failed')
             return False
     
     def export_screen_time_csv(self, filepath: str, start_date: Optional[datetime.date] = None,
@@ -209,7 +239,7 @@ class DataExporter:
             True if successful, False otherwise
         """
         try:
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 if start_date and end_date:
@@ -231,14 +261,16 @@ class DataExporter:
                 rows = cursor.fetchall()
                 
                 # Get metadata for friendly names
-                metadata = self.db.get_app_metadata_dict()
+                metadata = self.db.get_app_metadata_dict(connection=conn)
                 
-                with open(filepath, 'w', newline='', encoding='utf-8') as f:
-                    writer = csv.writer(f)
+                with atomic_text_file(filepath, newline='') as f:
+                    writer = SafeCsvWriter(f)
                     writer.writerow(['Application', 'Friendly Name', 'Total Seconds', 'Formatted Time'])
                     for row in rows:
                         app_name = row[0]
                         total_seconds = row[1] or 0
+                        if float(total_seconds).is_integer():
+                            total_seconds = int(total_seconds)
                         friendly_name = metadata.get(app_name, {}).get('friendly_name', '')
                         
                         # Format time as HH:MM:SS
@@ -249,9 +281,11 @@ class DataExporter:
                         
                         writer.writerow([app_name, friendly_name, total_seconds, formatted])
                 
-                return True
+                self.last_error = None
+            return True
         except Exception as e:
-            print(f"Export error: {e}")
+            self.last_error = str(e)
+            logging.getLogger(__name__).exception('Export failed')
             return False
     
     def export_all_csv(self, directory: str, start_date: Optional[datetime.date] = None,
@@ -317,7 +351,7 @@ class DataExporter:
                 'screen_time': []
             }
             
-            with self.db.get_connection() as conn:
+            with self.db.read_connection() as conn:
                 cursor = conn.cursor()
                 
                 # Daily stats
@@ -371,7 +405,7 @@ class DataExporter:
                         ORDER BY keys DESC
                     ''')
                 
-                metadata = self.db.get_app_metadata_dict()
+                metadata = self.db.get_app_metadata_dict(connection=conn)
                 
                 for row in cursor.fetchall():
                     app_name = row[0]
@@ -437,11 +471,13 @@ class DataExporter:
                     })
             
             # Write JSON file
-            with open(filepath, 'w', encoding='utf-8') as f:
+            with atomic_text_file(filepath) as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             
+            self.last_error = None
             return True
         except Exception as e:
-            print(f"Export error: {e}")
+            self.last_error = str(e)
+            logging.getLogger(__name__).exception('Export failed')
             return False
     
